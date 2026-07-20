@@ -48,9 +48,9 @@
       },
       "supports_parallel_tool_calls": false,
       "supports_image_detail_original": false,
-      "context_window": 100000,
-      "max_context_window": 100000,
-      "auto_compact_token_limit": 60000,
+      "context_window": 256000,
+      "max_context_window": 256000,
+      "auto_compact_token_limit": 140000,
       "effective_context_window_percent": 90,
       "experimental_supported_tools": [],
       "input_modalities": [
@@ -125,9 +125,9 @@
       },
       "supports_parallel_tool_calls": false,
       "supports_image_detail_original": false,
-      "context_window": 100000,
-      "max_context_window": 100000,
-      "auto_compact_token_limit": 60000,
+      "context_window": 256000,
+      "max_context_window": 256000,
+      "auto_compact_token_limit": 140000,
       "effective_context_window_percent": 90,
       "experimental_supported_tools": [],
       "input_modalities": [
@@ -139,6 +139,83 @@
       "model": "gpt-5.6-sol",
       "displayName": "GPT-5.6 Sol (Notion)",
       "defaultReasoningEffort": "high",
+      "supportedReasoningEfforts": [
+        {
+          "reasoningEffort": "low",
+          "description": "Fast"
+        },
+        {
+          "reasoningEffort": "medium",
+          "description": "Balanced"
+        },
+        {
+          "reasoningEffort": "high",
+          "description": "Thorough"
+        }
+      ]
+    },
+    {
+      "slug": "claude-sonnet-4.6",
+      "display_name": "Claude Sonnet 4.6 (Notion)",
+      "description": "Notion Claude Sonnet 4.6 through the local bridge.",
+      "default_reasoning_level": "medium",
+      "supported_reasoning_levels": [
+        {
+          "effort": "low",
+          "description": "Fast"
+        },
+        {
+          "effort": "medium",
+          "description": "Balanced"
+        },
+        {
+          "effort": "high",
+          "description": "Thorough"
+        }
+      ],
+      "shell_type": "shell_command",
+      "visibility": "list",
+      "supported_in_api": true,
+      "priority": 3,
+      "availability_nux": null,
+      "upgrade": null,
+      "base_instructions": "You are a coding agent working with a local runtime operator.",
+      "model_messages": {
+        "instructions_template": "You are a coding agent working with a local runtime operator.\n\n{{ personality }}",
+        "instructions_variables": {
+          "personality_default": "",
+          "personality_friendly": "Be friendly and collaborative.",
+          "personality_pragmatic": "Be concise, pragmatic, and rigorous."
+        },
+        "approvals": null
+      },
+      "include_skills_usage_instructions": false,
+      "supports_reasoning_summaries": false,
+      "default_reasoning_summary": "none",
+      "support_verbosity": true,
+      "default_verbosity": "low",
+      "apply_patch_tool_type": "freeform",
+      "web_search_tool_type": "text_and_image",
+      "truncation_policy": {
+        "mode": "tokens",
+        "limit": 10000
+      },
+      "supports_parallel_tool_calls": false,
+      "supports_image_detail_original": false,
+      "context_window": 256000,
+      "max_context_window": 256000,
+      "auto_compact_token_limit": 140000,
+      "effective_context_window_percent": 90,
+      "experimental_supported_tools": [],
+      "input_modalities": [
+        "text",
+        "image"
+      ],
+      "supports_search_tool": false,
+      "use_responses_lite": false,
+      "model": "claude-sonnet-4.6",
+      "displayName": "Claude Sonnet 4.6 (Notion)",
+      "defaultReasoningEffort": "medium",
       "supportedReasoningEfforts": [
         {
           "reasoningEffort": "low",
@@ -203,9 +280,9 @@
     },
     "supports_parallel_tool_calls": false,
     "supports_image_detail_original": false,
-    "context_window": 100000,
-    "max_context_window": 100000,
-    "auto_compact_token_limit": 60000,
+    "context_window": 256000,
+    "max_context_window": 256000,
+    "auto_compact_token_limit": 140000,
     "effective_context_window_percent": 90,
     "experimental_supported_tools": [],
     "input_modalities": [

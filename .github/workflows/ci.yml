@@ -14,30 +14,23 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-          cache: pip
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
           cache: npm
           cache-dependency-path: |
-            runtime/package-lock.json
+            bridge/package-lock.json
             notion-private-api-mcp/package-lock.json
-      - run: python -m venv .runtime/notion-agent-cli-venv
-      - run: .runtime/notion-agent-cli-venv/bin/pip install -r requirements.txt
-      - run: npm --prefix runtime ci
+      - run: npm --prefix bridge ci
       - run: npm --prefix notion-private-api-mcp ci
-      - run: PYTHONPATH=bridge .runtime/notion-agent-cli-venv/bin/python -m unittest discover -s bridge/tests -v
-      - run: npm --prefix runtime test
-      - run: npm --prefix runtime run check
+      - run: npm --prefix bridge test
+      - run: npm --prefix bridge run check
       - run: npm --prefix notion-private-api-mcp run check
       - run: node --test scripts/install-codex-config.test.mjs
       - run: node --test scripts/render-config.test.mjs
       - run: node scripts/check-layout.mjs
       - run: node scripts/check-public-release.mjs
-      - run: bash -n scripts/install-local.sh bridge/start.sh runtime/start.sh
+      - run: bash -n scripts/install-local.sh bridge/start.sh run-full.sh
 
   windows-syntax:
     runs-on: windows-latest

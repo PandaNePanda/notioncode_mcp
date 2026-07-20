@@ -1,1 +1,0 @@
-notion-agent-cli[serve]==0.1.12

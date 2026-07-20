@@ -19,24 +19,6 @@ function Get-DotEnv([string]$Path) {
     return $values
 }
 
-function Find-Python {
-    if (Get-Command py.exe -ErrorAction SilentlyContinue) {
-        return @{ Command = "py.exe"; Prefix = @("-3") }
-    }
-    if (Get-Command python.exe -ErrorAction SilentlyContinue) {
-        return @{ Command = "python.exe"; Prefix = @() }
-    }
-    throw "Python 3 was not found. Install Python 3.10 or newer and enable Add Python to PATH."
-}
-
-function Invoke-Python([hashtable]$Python, [string[]]$Arguments) {
-    $allArguments = @($Python.Prefix) + @($Arguments)
-    & $Python.Command @allArguments
-    if ($LASTEXITCODE -ne 0) {
-        throw "Python command failed with exit code $LASTEXITCODE."
-    }
-}
-
 function New-RandomHex([int]$ByteCount = 32) {
     $bytes = New-Object byte[] $ByteCount
     $generator = [Security.Cryptography.RandomNumberGenerator]::Create()
@@ -64,6 +46,13 @@ function Assert-Command([string]$Name, [string]$InstallHint) {
     }
 }
 
+function Assert-Node20 {
+    & node.exe -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 20 ? 0 : 1)'
+    if ($LASTEXITCODE -ne 0) {
+        throw "Node.js 20 or newer is required."
+    }
+}
+
 function Test-TcpPort([int]$Port) {
     try {
         $client = [Net.Sockets.TcpClient]::new()
@@ -79,6 +68,36 @@ function Test-TcpPort([int]$Port) {
     catch {
         return $false
     }
+}
+
+function Wait-TcpPort([int]$Port, [int]$TimeoutSeconds = 30) {
+    $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+    do {
+        if (Test-TcpPort $Port) {
+            return $true
+        }
+        Start-Sleep -Milliseconds 500
+    } while ([DateTime]::UtcNow -lt $deadline)
+    return $false
+}
+
+function Get-ListeningProcessId([int]$Port) {
+    if (-not (Get-Command Get-NetTCPConnection -ErrorAction SilentlyContinue)) {
+        return $null
+    }
+    try {
+        $owners = @(
+            Get-NetTCPConnection -LocalAddress "127.0.0.1" -LocalPort $Port -State Listen -ErrorAction Stop |
+                Select-Object -ExpandProperty OwningProcess -Unique
+        )
+        if ($owners.Count -eq 1) {
+            return [int]$owners[0]
+        }
+    }
+    catch {
+        return $null
+    }
+    return $null
 }
 
 function Wait-HttpOk([string]$Uri, [int]$TimeoutSeconds = 30) {
