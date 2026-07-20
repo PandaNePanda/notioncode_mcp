@@ -34,9 +34,14 @@ AI-инструменты.
 
 Поддерживаемые модели bridge:
 
-- `fable-5` — модель по умолчанию; в Codex использует совместимый транспортный
-  ID `gpt-5.5`, который bridge преобразует обратно в `fable-5`;
-- `gpt-5.6-sol`.
+| Модель в интерфейсе | Bridge/API ID | Codex transport ID | Внутреннее имя Notion |
+|---|---|---|---|
+| Fable 5 (Notion), по умолчанию | `fable-5` | `gpt-5.5` | `acai-budino-high` |
+| GPT-5.6 Sol (Notion) | `gpt-5.6-sol` | `gpt-5.6-sol` | `orange-mousse` |
+
+Codex использует совместимый ID `gpt-5.5` для Fable, а bridge преобразует его
+обратно в `fable-5`. Исходная таблица внутренних aliases находится в
+`state-template/.notionagents/models.json`.
 
 ## Быстрый выбор инструкции
 
