@@ -1,0 +1,52 @@
+{
+  "name": "notion-private-mcp",
+  "version": "0.2.0",
+  "type": "module",
+  "description": "Minimal MCP server for the Notion private (internal) API",
+  "mcpName": "io.github.kirvigen/notion-private-api-mcp",
+  "license": "MIT",
+  "author": "kir.vigen <kir.vigen@yandex.ru>",
+  "homepage": "https://github.com/kirvigen/notion-private-api-mcp#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kirvigen/notion-private-api-mcp.git"
+  },
+  "bugs": {
+    "url": "https://github.com/kirvigen/notion-private-api-mcp/issues"
+  },
+  "keywords": [
+    "notion",
+    "notion-api",
+    "notion-mcp",
+    "mcp",
+    "mcp-server",
+    "model-context-protocol",
+    "claude",
+    "claude-desktop",
+    "anthropic",
+    "llm",
+    "ai",
+    "unofficial-api"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "bin": {
+    "notion-private-mcp": "./src/server.js"
+  },
+  "files": [
+    "src",
+    "server.json",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
+  "scripts": {
+    "start": "node ./src/server.js",
+    "check": "node --check ./src/server.js && node --check ./src/notion-client.js && node --check ./src/notion-blocks.js && node --check ./src/markdown.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "zod": "^4.3.6"
+  }
+}

@@ -1,0 +1,19 @@
+[Unit]
+Description=Notion AI OpenAI/Anthropic-compatible agent bridge
+After=network-online.target notion-code-mcp.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__SERVICE_USER__
+Environment=HOME=__USER_HOME__
+Environment=NOTION_AGENT_HOME=__USER_HOME__/.notionagents
+WorkingDirectory=__NOTIONCODE_ROOT__/bridge
+ExecStart=__NOTIONCODE_ROOT__/.runtime/notion-agent-cli-venv/bin/python -m uvicorn server:app --host 127.0.0.1 --port 8765
+Restart=on-failure
+RestartSec=3
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=__NOTIONCODE_ROOT__/runtime/.env
+
+[Install]
+WantedBy=multi-user.target

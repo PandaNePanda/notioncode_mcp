@@ -1,0 +1,13 @@
+{
+  "name": "notion-code-mcp",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "node --check server.js && node --check platform.js",
+    "test": "node --test platform.test.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "zod": "^4.3.6"
+  }
+}

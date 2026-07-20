@@ -1,0 +1,16 @@
+[Unit]
+Description=Local coding MCP runtime for Notion AI models
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__SERVICE_USER__
+Environment=HOME=__USER_HOME__
+WorkingDirectory=__NOTIONCODE_ROOT__/runtime
+ExecStart=__NOTIONCODE_ROOT__/runtime/start.sh
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
