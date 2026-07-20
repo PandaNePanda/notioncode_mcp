@@ -1,0 +1,238 @@
+{
+  "models": [
+    {
+      "slug": "gpt-5.5",
+      "display_name": "Fable 5 (Notion)",
+      "description": "Notion Fable 5 through the local bridge.",
+      "default_reasoning_level": "high",
+      "supported_reasoning_levels": [
+        {
+          "effort": "low",
+          "description": "Fast"
+        },
+        {
+          "effort": "medium",
+          "description": "Balanced"
+        },
+        {
+          "effort": "high",
+          "description": "Thorough"
+        }
+      ],
+      "shell_type": "shell_command",
+      "visibility": "list",
+      "supported_in_api": true,
+      "priority": 1,
+      "availability_nux": null,
+      "upgrade": null,
+      "base_instructions": "You are a coding agent working with a local runtime operator.",
+      "model_messages": {
+        "instructions_template": "You are a coding agent working with a local runtime operator.\n\n{{ personality }}",
+        "instructions_variables": {
+          "personality_default": "",
+          "personality_friendly": "Be friendly and collaborative.",
+          "personality_pragmatic": "Be concise, pragmatic, and rigorous."
+        },
+        "approvals": null
+      },
+      "include_skills_usage_instructions": false,
+      "supports_reasoning_summaries": false,
+      "default_reasoning_summary": "none",
+      "support_verbosity": true,
+      "default_verbosity": "low",
+      "apply_patch_tool_type": "freeform",
+      "web_search_tool_type": "text_and_image",
+      "truncation_policy": {
+        "mode": "tokens",
+        "limit": 10000
+      },
+      "supports_parallel_tool_calls": false,
+      "supports_image_detail_original": false,
+      "context_window": 100000,
+      "max_context_window": 100000,
+      "auto_compact_token_limit": 60000,
+      "effective_context_window_percent": 90,
+      "experimental_supported_tools": [],
+      "input_modalities": [
+        "text",
+        "image"
+      ],
+      "supports_search_tool": false,
+      "use_responses_lite": false,
+      "model": "gpt-5.5",
+      "displayName": "Fable 5 (Notion)",
+      "defaultReasoningEffort": "high",
+      "supportedReasoningEfforts": [
+        {
+          "reasoningEffort": "low",
+          "description": "Fast"
+        },
+        {
+          "reasoningEffort": "medium",
+          "description": "Balanced"
+        },
+        {
+          "reasoningEffort": "high",
+          "description": "Thorough"
+        }
+      ]
+    },
+    {
+      "slug": "gpt-5.6-sol",
+      "display_name": "GPT-5.6 Sol (Notion)",
+      "description": "Notion GPT-5.6 Sol through the local bridge.",
+      "default_reasoning_level": "high",
+      "supported_reasoning_levels": [
+        {
+          "effort": "low",
+          "description": "Fast"
+        },
+        {
+          "effort": "medium",
+          "description": "Balanced"
+        },
+        {
+          "effort": "high",
+          "description": "Thorough"
+        }
+      ],
+      "shell_type": "shell_command",
+      "visibility": "list",
+      "supported_in_api": true,
+      "priority": 2,
+      "availability_nux": null,
+      "upgrade": null,
+      "base_instructions": "You are a coding agent working with a local runtime operator.",
+      "model_messages": {
+        "instructions_template": "You are a coding agent working with a local runtime operator.\n\n{{ personality }}",
+        "instructions_variables": {
+          "personality_default": "",
+          "personality_friendly": "Be friendly and collaborative.",
+          "personality_pragmatic": "Be concise, pragmatic, and rigorous."
+        },
+        "approvals": null
+      },
+      "include_skills_usage_instructions": false,
+      "supports_reasoning_summaries": false,
+      "default_reasoning_summary": "none",
+      "support_verbosity": true,
+      "default_verbosity": "low",
+      "apply_patch_tool_type": "freeform",
+      "web_search_tool_type": "text_and_image",
+      "truncation_policy": {
+        "mode": "tokens",
+        "limit": 10000
+      },
+      "supports_parallel_tool_calls": false,
+      "supports_image_detail_original": false,
+      "context_window": 100000,
+      "max_context_window": 100000,
+      "auto_compact_token_limit": 60000,
+      "effective_context_window_percent": 90,
+      "experimental_supported_tools": [],
+      "input_modalities": [
+        "text",
+        "image"
+      ],
+      "supports_search_tool": false,
+      "use_responses_lite": false,
+      "model": "gpt-5.6-sol",
+      "displayName": "GPT-5.6 Sol (Notion)",
+      "defaultReasoningEffort": "high",
+      "supportedReasoningEfforts": [
+        {
+          "reasoningEffort": "low",
+          "description": "Fast"
+        },
+        {
+          "reasoningEffort": "medium",
+          "description": "Balanced"
+        },
+        {
+          "reasoningEffort": "high",
+          "description": "Thorough"
+        }
+      ]
+    }
+  ],
+  "defaultModel": {
+    "slug": "gpt-5.5",
+    "display_name": "Fable 5 (Notion)",
+    "description": "Notion Fable 5 through the local bridge.",
+    "default_reasoning_level": "high",
+    "supported_reasoning_levels": [
+      {
+        "effort": "low",
+        "description": "Fast"
+      },
+      {
+        "effort": "medium",
+        "description": "Balanced"
+      },
+      {
+        "effort": "high",
+        "description": "Thorough"
+      }
+    ],
+    "shell_type": "shell_command",
+    "visibility": "list",
+    "supported_in_api": true,
+    "priority": 1,
+    "availability_nux": null,
+    "upgrade": null,
+    "base_instructions": "You are a coding agent working with a local runtime operator.",
+    "model_messages": {
+      "instructions_template": "You are a coding agent working with a local runtime operator.\n\n{{ personality }}",
+      "instructions_variables": {
+        "personality_default": "",
+        "personality_friendly": "Be friendly and collaborative.",
+        "personality_pragmatic": "Be concise, pragmatic, and rigorous."
+      },
+      "approvals": null
+    },
+    "include_skills_usage_instructions": false,
+    "supports_reasoning_summaries": false,
+    "default_reasoning_summary": "none",
+    "support_verbosity": true,
+    "default_verbosity": "low",
+    "apply_patch_tool_type": "freeform",
+    "web_search_tool_type": "text_and_image",
+    "truncation_policy": {
+      "mode": "tokens",
+      "limit": 10000
+    },
+    "supports_parallel_tool_calls": false,
+    "supports_image_detail_original": false,
+    "context_window": 100000,
+    "max_context_window": 100000,
+    "auto_compact_token_limit": 60000,
+    "effective_context_window_percent": 90,
+    "experimental_supported_tools": [],
+    "input_modalities": [
+      "text",
+      "image"
+    ],
+    "supports_search_tool": false,
+    "use_responses_lite": false,
+    "model": "gpt-5.5",
+    "displayName": "Fable 5 (Notion)",
+    "defaultReasoningEffort": "high",
+    "supportedReasoningEfforts": [
+      {
+        "reasoningEffort": "low",
+        "description": "Fast"
+      },
+      {
+        "reasoningEffort": "medium",
+        "description": "Balanced"
+      },
+      {
+        "reasoningEffort": "high",
+        "description": "Thorough"
+      }
+    ]
+  },
+  "source": "local-notion-model-catalog",
+  "model_catalog_json": "config/codex-models.json",
+  "updated_at": "2026-07-19T22:56:07.224541+00:00"
+}

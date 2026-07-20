@@ -1,0 +1,22 @@
+model = "gpt-5.5"
+model_provider = "notion-ai"
+model_reasoning_effort = "high"
+model_context_window = 100000
+model_auto_compact_token_limit = 60000
+model_auto_compact_token_limit_scope = "total"
+tool_output_token_limit = 12000
+model_catalog_json = "__NOTIONCODE_ROOT__/config/codex-models.json"
+
+[model_providers.notion-ai]
+name = "Notion AI"
+base_url = "http://127.0.0.1:8765/v1"
+wire_api = "responses"
+experimental_bearer_token = "local-notion-bridge"
+requires_openai_auth = false
+
+[mcp_servers.notion-private]
+command = "node"
+args = ["__NOTIONCODE_ROOT__/notion-private-api-mcp/run-from-account.js"]
+startup_timeout_sec = 20
+tool_timeout_sec = 120
+enabled = false # __NOTION_MCP_ENABLED__

@@ -1,0 +1,28 @@
+# Runtime state and credentials
+/.runtime/
+/state/
+/runtime/.env
+/public-repo/
+/.notionagents/
+**/notion_account.json
+**/accounts/*.json
+**/*.legacy-backup
+**/conversation-state.json
+**/pool-state.json
+*.notioncode-backup-*
+
+# Environment files may contain credentials
+**/.env
+**/.env.*
+!**/.env.example
+
+# Dependencies and generated files
+**/node_modules/
+**/__pycache__/
+*.py[cod]
+*.log
+
+# Local editor and OS files
+.DS_Store
+.idea/
+.vscode/
