@@ -7,13 +7,19 @@ import { fileURLToPath } from "node:url";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const legacyProjectPath = ["", "root", "notioncode_mcp"].join("/");
 const requiredShared = [
-  "bridge/server.py",
-  "bridge/account_pool.py",
-  "bridge/migrate_accounts.py",
-  "bridge/turn_affinity.py",
-  "bridge/conversation_segments.py",
-  "runtime/server.js",
-  "runtime/platform.js",
+  "run-full.sh",
+  "run-full.ps1",
+  "bridge/server.js",
+  "bridge/bin/notion-agent.mjs",
+  "bridge/package.json",
+  "bridge/package-lock.json",
+  "bridge/src/account-pool.js",
+  "bridge/src/http-server.js",
+  "bridge/src/mcp-server.js",
+  "bridge/src/provider.js",
+  "bridge/src/runtime-tools.js",
+  "bridge/src/turn-affinity.js",
+  "bridge/src/conversation-segments.js",
   "notion-private-api-mcp/src/server.js",
   "notion-private-api-mcp/run-from-account.js",
   "config/codex-cli-config.toml",
@@ -21,6 +27,11 @@ const requiredShared = [
   "scripts/test-codex-app-server.mjs",
   "scripts/check-public-release.mjs",
   "scripts/render-config.test.mjs",
+  "scripts/windows/install.ps1",
+  "scripts/windows/start.ps1",
+  "scripts/windows/status.ps1",
+  "scripts/windows/stop.ps1",
+  "scripts/windows/verify.ps1",
   "config/opencode.jsonc",
   "state-template/.notionagents/models.json",
 ];
@@ -38,10 +49,15 @@ for (const relative of requiredShared) {
   }
 }
 
-for (const relative of [
-  "deploy/systemd/notion-code-mcp.service",
-  "deploy/systemd/notion-fable-proxy.service",
-]) {
+const allowedRootScripts = new Set(["run-full.sh", "run-full.ps1"]);
+for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+  if (!entry.isFile() || !/\.(?:sh|ps1|cmd|bat)$/i.test(entry.name)) continue;
+  if (!allowedRootScripts.has(entry.name)) {
+    throw new Error(`Only run-full launchers may exist at the repository root: ${entry.name}`);
+  }
+}
+
+for (const relative of ["deploy/systemd/notion-fable-proxy.service"]) {
   const content = fs.readFileSync(path.join(root, relative), "utf8");
   for (const placeholder of ["__NOTIONCODE_ROOT__", "__USER_HOME__", "__SERVICE_USER__"]) {
     if (!content.includes(placeholder)) {
@@ -51,6 +67,9 @@ for (const relative of [
   if (content.includes(legacyProjectPath)) {
     throw new Error(`Systemd template contains a machine-specific path: ${relative}`);
   }
+}
+if (fs.existsSync(path.join(root, "deploy/systemd/notion-code-mcp.service"))) {
+  throw new Error("Separate coding MCP systemd service must not exist.");
 }
 for (const relative of forbiddenDuplicates) {
   if (fs.existsSync(path.join(root, relative))) {

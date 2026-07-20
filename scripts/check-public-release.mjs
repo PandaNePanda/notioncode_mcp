@@ -6,10 +6,33 @@ import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const tracked = execFileSync("git", ["ls-files", "-z"], {
+const tracked = execFileSync("git", ["ls-files", "--cached", "--others", "--exclude-standard", "-z"], {
   cwd: root,
   encoding: "utf8",
 }).split("\0").filter(Boolean);
+const obsoletePaths = new Set([
+  "deploy/systemd/notion-code-mcp.service",
+  "requirements.txt",
+  "bridge/account_pool.py",
+  "bridge/conversation_segments.py",
+  "bridge/diagnostics.py",
+  "bridge/migrate_accounts.py",
+  "bridge/notion_images.py",
+  "bridge/server.py",
+  "bridge/turn_affinity.py",
+  "bridge/tests/test_account_pool.py",
+  "bridge/tests/test_conversation_segments.py",
+  "bridge/tests/test_migrate_accounts.py",
+  "bridge/tests/test_notion_images.py",
+  "bridge/tests/test_server_regressions.py",
+  "bridge/tests/test_turn_affinity.py",
+  "install.ps1",
+  "start.ps1",
+  "status.ps1",
+  "stop.ps1",
+  "verify.ps1",
+  "opencode-notion.cmd",
+]);
 
 const forbiddenPaths = [
   /^\.runtime\//,
@@ -39,6 +62,11 @@ for (const relative of tracked) {
     continue;
   }
   const absolute = path.join(root, relative);
+  if (!fs.existsSync(absolute)) {
+    if (obsoletePaths.has(relative)) continue;
+    errors.push(`tracked file missing from working tree: ${relative}`);
+    continue;
+  }
   const stat = fs.lstatSync(absolute);
   if (!stat.isFile() || stat.size > 5 * 1024 * 1024) continue;
   const content = fs.readFileSync(absolute, "utf8");
@@ -48,6 +76,12 @@ for (const relative of tracked) {
   const legacyProjectPath = ["", "root", "notioncode_mcp"].join("/");
   if (content.includes(legacyProjectPath)) {
     errors.push(`machine-specific project path detected in ${relative}`);
+  }
+}
+
+for (const relative of obsoletePaths) {
+  if (fs.existsSync(path.join(root, relative))) {
+    errors.push(`obsolete migration file must not be shipped: ${relative}`);
   }
 }
 
