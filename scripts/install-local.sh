@@ -84,9 +84,25 @@ else
   echo "[✓] Python venv already exists — skipping pip install."
 fi
 
-npm --prefix "${ROOT}/runtime" ci --omit=dev
-npm --prefix "${ROOT}/notion-private-api-mcp" ci --omit=dev
-npm --prefix "${ROOT}/.runtime/opencode" install @ai-sdk/openai-compatible @opencode-ai/plugin
+if npm --prefix "${ROOT}/runtime" ls --omit=dev --depth=0 >/dev/null 2>&1; then
+  echo "[✓] Runtime Node dependencies already installed — skipping npm ci."
+else
+  npm --prefix "${ROOT}/runtime" ci --omit=dev
+fi
+
+if npm --prefix "${ROOT}/notion-private-api-mcp" ls --omit=dev --depth=0 >/dev/null 2>&1; then
+  echo "[✓] Notion MCP Node dependencies already installed — skipping npm ci."
+else
+  npm --prefix "${ROOT}/notion-private-api-mcp" ci --omit=dev
+fi
+
+if npm --prefix "${ROOT}/.runtime/opencode" ls --depth=0 \
+  @ai-sdk/openai-compatible @opencode-ai/plugin >/dev/null 2>&1; then
+  echo "[✓] OpenCode Node dependencies already installed — skipping npm install."
+else
+  npm --prefix "${ROOT}/.runtime/opencode" install \
+    @ai-sdk/openai-compatible @opencode-ai/plugin
+fi
 
 if [[ ! -f "${ROOT}/runtime/.env" ]]; then
   secret="$(openssl rand -hex 32)"
