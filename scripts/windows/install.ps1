@@ -82,6 +82,8 @@ if (-not (Test-Path $RuntimeEnv)) {
 if ($LASTEXITCODE -ne 0) { throw "Codex configuration generation failed." }
 & node.exe (Join-Path $Root "scripts\render-config.mjs") (Join-Path $Root "config\opencode.jsonc") (Join-Path $OpenCodeHome "opencode.jsonc") $Root $HOME
 if ($LASTEXITCODE -ne 0) { throw "OpenCode configuration generation failed." }
+& node.exe (Join-Path $Root "scripts\apply-token-profile.mjs") $RuntimeStateDir (Join-Path $CodexHome "config.toml") (Join-Path $Root "config\codex-models.json") (Join-Path $OpenCodeHome "opencode.jsonc")
+if ($LASTEXITCODE -ne 0) { throw "Token profile application failed." }
 
 $envFile = Join-Path $Root ".runtime\windows-paths.env"
 $pathsContent = @(

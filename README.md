@@ -173,6 +173,15 @@ For long conversations, the model directory reports a 256,000-token context wind
 
 These values are local Codex/OpenCode settings and model metadata. They do not override technical constraints of upstream Notion AI: increasing a number in the config file will not automatically increase the actual upstream model window.
 
+The interactive `run-full.sh` and `run-full.ps1` launchers include a **Settings** option immediately before Exit. It switches every generated Codex model entry, the Codex root limits, and the OpenCode context limits together:
+
+| Profile | Context Window | Auto-compaction | Purpose |
+|---|---:|---:|---|
+| Safe | 100,000 tokens | 60,000 total tokens | Original conservative limits |
+| Extreme (default) | 256,000 tokens | 140,000 total tokens | Current long-session limits |
+
+On Windows, the same menu can be opened directly with `.\run-full.ps1 -Action Settings`. The selected profile is persisted in `.runtime/token-profile` and reapplied by future installer/start runs. Reload VS Code/Codex and open a new chat after switching profiles.
+
 | Limit | Current Value | Where to Change |
 |---|---:|---|
 | Codex Reported Window | 256,000 tokens | `model_context_window` in `config/codex-cli-config.toml`; `context_window` and `max_context_window` for both models and `defaultModel` in `config/codex-models.json` |

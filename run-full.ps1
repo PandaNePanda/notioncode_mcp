@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [ValidateSet("Menu", "Start", "Stop", "Status", "CheckAccounts", "AddAccount", "RefreshClientVersion", "Install", "Verify", "OpenCode")]
+    [ValidateSet("Menu", "Start", "Stop", "Status", "CheckAccounts", "AddAccount", "RefreshClientVersion", "Settings", "Install", "Verify", "OpenCode")]
     [string]$Action = "Menu",
     [string]$CodeRoot = $HOME,
     [switch]$NoAutoStart
@@ -19,6 +19,12 @@ $VerifyScript = Join-Path $WindowsScripts "verify.ps1"
 $BridgeDir = Join-Path $Root "bridge"
 $NodeCli = Join-Path $BridgeDir "bin\notion-agent.mjs"
 $AccountHome = Join-Path $HOME ".notionagents"
+$RuntimeStateDir = Join-Path $Root ".runtime"
+$TokenProfileScript = Join-Path $Root "scripts\apply-token-profile.mjs"
+$TokenProfileState = Join-Path $RuntimeStateDir "token-profile"
+$CodexConfig = Join-Path $HOME ".codex\config.toml"
+$CatalogTemplate = Join-Path $Root "config\codex-models.json"
+$OpenCodeConfig = Join-Path $RuntimeStateDir "opencode\opencode.jsonc"
 
 function Get-AccountFiles {
     $files = @()
@@ -55,6 +61,50 @@ function Invoke-Install {
         $arguments.NoStart = $true
     }
     & $InstallScript @arguments
+}
+
+function Invoke-TokenProfile {
+    param([ValidateSet("safe", "extreme")][string]$Profile)
+
+    $profileArguments = @(
+        $TokenProfileScript,
+        $RuntimeStateDir,
+        $CodexConfig,
+        $CatalogTemplate,
+        $OpenCodeConfig
+    )
+    if ($Profile) {
+        $profileArguments += $Profile
+    }
+    & node.exe @profileArguments
+    if ($LASTEXITCODE -ne 0) {
+        throw "Token profile update failed."
+    }
+}
+
+function Invoke-Settings {
+    Invoke-Install
+    $current = "extreme"
+    if (Test-Path $TokenProfileState) {
+        $current = (Get-Content -LiteralPath $TokenProfileState -Raw).Trim()
+    }
+
+    Write-Host ""
+    Write-Host "======================================================"
+    Write-Host " Token Settings (current: $current)"
+    Write-Host "======================================================"
+    Write-Host "  1) Safe    - 100K context, auto-compact at 60K"
+    Write-Host "  2) Extreme - 256K context, auto-compact at 140K"
+    Write-Host "  3) Back"
+    Write-Host ""
+
+    switch (Read-Host "Select a token profile [1-3]") {
+        "1" { Invoke-TokenProfile -Profile "safe" }
+        "2" { Invoke-TokenProfile -Profile "extreme" }
+        "3" { return }
+        default { throw "Invalid token profile." }
+    }
+    Write-Host "Reload VS Code/Codex and open a new chat to use the new limits." -ForegroundColor Green
 }
 
 function Invoke-CheckAccounts {
@@ -227,10 +277,11 @@ function Show-Menu {
     Write-Host "  5) Stop unified Node server"
     Write-Host "  6) Show status"
     Write-Host "  7) Open OpenCode"
-    Write-Host "  8) Exit"
+    Write-Host "  8) Settings"
+    Write-Host "  9) Exit"
     Write-Host ""
 
-    switch (Read-Host "Select an option [1-8]") {
+    switch (Read-Host "Select an option [1-9]") {
         "1" { Invoke-Start }
         "2" { Invoke-CheckAccounts }
         "3" { Invoke-AddAccount }
@@ -238,7 +289,8 @@ function Show-Menu {
         "5" { & $StopScript }
         "6" { & $StatusScript }
         "7" { Invoke-OpenCode }
-        "8" { return }
+        "8" { Invoke-Settings }
+        "9" { return }
         default { throw "Invalid option." }
     }
 }
@@ -251,6 +303,7 @@ switch ($Action) {
     "CheckAccounts" { Invoke-CheckAccounts }
     "AddAccount" { Invoke-AddAccount }
     "RefreshClientVersion" { Invoke-RefreshClientVersion }
+    "Settings" { Invoke-Settings }
     "Install" { Invoke-Install }
     "Verify" { & $VerifyScript }
     "OpenCode" { Invoke-OpenCode }

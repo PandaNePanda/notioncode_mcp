@@ -23,6 +23,8 @@ const requiredShared = [
   "notion-private-api-mcp/src/server.js",
   "notion-private-api-mcp/run-from-account.js",
   "config/codex-cli-config.toml",
+  "scripts/apply-token-profile.mjs",
+  "scripts/apply-token-profile.test.mjs",
   "scripts/install-codex-config.mjs",
   "scripts/test-codex-app-server.mjs",
   "scripts/check-public-release.mjs",

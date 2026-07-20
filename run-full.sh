@@ -33,6 +33,9 @@ ACCOUNT_HOME="${USER_HOME}/.notionagents"
 CODEX_HOME="${USER_HOME}/.codex"
 NODE_CLI="${ROOT}/bridge/bin/notion-agent.mjs"
 RUNTIME_ENV="${ROOT}/runtime/.env"
+TOKEN_PROFILE_SCRIPT="${ROOT}/scripts/apply-token-profile.mjs"
+TOKEN_PROFILE_STATE_DIR="${ROOT}/.runtime"
+OPENCODE_CONFIG="${ROOT}/.runtime/opencode/opencode.jsonc"
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -106,13 +109,34 @@ port_is_listening() {
 }
 
 install_codex_config() {
-    mkdir -p "${CODEX_HOME}"
+    mkdir -p "${CODEX_HOME}" "${ROOT}/.runtime/opencode"
+    node "${ROOT}/scripts/render-config.mjs" \
+        "${ROOT}/config/opencode.jsonc" \
+        "${OPENCODE_CONFIG}" \
+        "${ROOT}" \
+        "${USER_HOME}"
     node "${ROOT}/scripts/install-codex-config.mjs" \
         "${ROOT}/config/codex-cli-config.toml" \
         "${CODEX_HOME}/config.toml" \
         "${ROOT}" \
         "${USER_HOME}" \
         false
+    apply_token_profile
+}
+
+apply_token_profile() {
+    local profile="${1:-}"
+    local arguments=(
+        "${TOKEN_PROFILE_SCRIPT}"
+        "${TOKEN_PROFILE_STATE_DIR}"
+        "${CODEX_HOME}/config.toml"
+        "${ROOT}/config/codex-models.json"
+        "${OPENCODE_CONFIG}"
+    )
+    if [[ -n "${profile}" ]]; then
+        arguments+=("${profile}")
+    fi
+    node "${arguments[@]}"
 }
 
 ensure_setup() {
@@ -282,6 +306,33 @@ refresh_tokens() {
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 }
 
+configure_token_settings() {
+    ensure_setup
+    local current="extreme"
+    if [[ -f "${TOKEN_PROFILE_STATE_DIR}/token-profile" ]]; then
+        current="$(tr -d '\r\n' < "${TOKEN_PROFILE_STATE_DIR}/token-profile")"
+    fi
+
+    echo ""
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo " Token Settings (current: ${current})"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "  1) Safe    — 100K context, auto-compact at 60K"
+    echo "  2) Extreme — 256K context, auto-compact at 140K"
+    echo "  3) Back"
+    echo ""
+    echo -n "  Select a token profile [1-3]: "
+    local choice
+    read -r choice
+    case "${choice}" in
+        1) apply_token_profile safe ;;
+        2) apply_token_profile extreme ;;
+        3) return 0 ;;
+        *) echo "[!] Invalid token profile."; return 1 ;;
+    esac
+    echo "[✓] Reload VS Code/Codex and open a new chat to use the new limits."
+}
+
 start_services() {
     ensure_setup
     require_command curl
@@ -431,9 +482,10 @@ echo "  1)  🚀  Start unified Node server"
 echo "  2)  🔍  Check accounts"
 echo "  3)  ➕  Add a new account"
 echo "  4)  🔄  Refresh account live tokens"
-echo "  5)  ❌  Exit"
+echo "  5)  ⚙️   Settings"
+echo "  6)  ❌  Exit"
 echo ""
-echo -n "  Select an option [1-5]: "
+echo -n "  Select an option [1-6]: "
 read -r CHOICE
 
 case "${CHOICE}" in
@@ -441,7 +493,8 @@ case "${CHOICE}" in
     2) check_accounts ;;
     3) add_account ;;
     4) refresh_tokens ;;
-    5)
+    5) configure_token_settings ;;
+    6)
         _clear_history
         exit 0
         ;;

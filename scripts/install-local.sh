@@ -128,6 +128,9 @@ run_as_service_user node "${ROOT}/scripts/render-config.mjs" \
 run_as_service_user node "${ROOT}/scripts/install-codex-config.mjs" \
   "${ROOT}/config/codex-cli-config.toml" "${CODEX_HOME}/config.toml" "${ROOT}" "${USER_HOME}" \
   "${NOTION_MCP_ENABLED}"
+run_as_service_user node "${ROOT}/scripts/apply-token-profile.mjs" \
+  "${ROOT}/.runtime" "${CODEX_HOME}/config.toml" \
+  "${ROOT}/config/codex-models.json" "${ROOT}/.runtime/opencode/opencode.jsonc"
 
 if [[ "${IS_DARWIN}" == "false" && "${EUID}" -eq 0 ]]; then
   node "${ROOT}/scripts/render-config.mjs" \
