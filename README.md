@@ -187,6 +187,41 @@ auto-compaction запускается на 60 000 total tokens, а output tools
 12 000 токенов. Bridge поддерживает и обычный compaction-turn, и
 `POST /v1/responses/compact`.
 
+## Лимиты контекста и токенов
+
+Эти значения являются локальными настройками Codex/OpenCode и metadata моделей.
+Они не отменяют технические ограничения upstream Notion AI: увеличение числа в
+конфиге само по себе не увеличивает реальное окно модели.
+
+| Лимит | Текущее значение | Где менять |
+|---|---:|---|
+| Заявленное окно Codex | 100 000 токенов | `model_context_window` в `config/codex-cli-config.toml`; `context_window` и `max_context_window` у обеих моделей и `defaultModel` в `config/codex-models.json` |
+| Порог auto-compaction | 60 000 total tokens | `model_auto_compact_token_limit` в `config/codex-cli-config.toml`; `auto_compact_token_limit` у обеих моделей и `defaultModel` в `config/codex-models.json` |
+| Область подсчёта compaction | `total` — input + output | `model_auto_compact_token_limit_scope` в `config/codex-cli-config.toml` |
+| Эффективная доля окна | 90% | `effective_context_window_percent` у обеих моделей и `defaultModel` в `config/codex-models.json` |
+| Truncation policy каталога | 10 000 токенов | `truncation_policy.limit` у обеих моделей и `defaultModel` в `config/codex-models.json` |
+| Вывод tools в Codex-контексте | 12 000 токенов | `tool_output_token_limit` в `config/codex-cli-config.toml` |
+| Окно OpenCode | 100 000 токенов | `provider.notion-fable.models.*.limit.context` в `config/opencode.jsonc` |
+| Заявленный output OpenCode | 40 000 токенов | `provider.notion-fable.models.*.limit.output` в `config/opencode.jsonc` |
+
+Bridge не устанавливает отдельный жёсткий `max_output_tokens` для ответа
+Notion: фактическую длину ответа определяет upstream. `count_tokens` для
+Anthropic-совместимого endpoint использует приблизительную оценку
+`len(serialized JSON) / 4`, а не отдельный лимит.
+
+Изображения расходуют контекст динамически. Оценка вычисляется по размерам
+изображения функцией `_openai_image_tokens()` в `bridge/notion_images.py`.
+Там же находятся связанные ограничения: максимум 10 изображений на запрос,
+20 MiB на одно изображение и 50 MiB суммарно. Это byte/count-ограничения, а не
+фиксированный токен-бюджет.
+
+При изменении значений держите одинаковые параметры обеих моделей и
+`defaultModel`. Порог auto-compaction должен оставаться ниже эффективного окна:
+при текущих настройках `60 000 < 100 000 × 90%`. После изменения повторно
+запустите штатный installer, выполните `Developer: Reload Window` и создайте
+новый чат. OpenCode также получает обновлённый config только после повторного
+installer/перезапуска.
+
 ## Добавление до 10 аккаунтов
 
 Основной файл:
