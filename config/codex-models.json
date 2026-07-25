@@ -233,9 +233,9 @@
     }
   ],
   "defaultModel": {
-    "slug": "gpt-5.5",
-    "display_name": "Fable 5 (Notion)",
-    "description": "Notion Fable 5 through the local bridge.",
+    "slug": "opus-5",
+    "display_name": "Opus 5 (Notion)",
+    "description": "Notion Opus 5 through the local bridge.",
     "default_reasoning_level": "high",
     "supported_reasoning_levels": [
       {
@@ -254,7 +254,7 @@
     "shell_type": "shell_command",
     "visibility": "list",
     "supported_in_api": true,
-    "priority": 1,
+    "priority": 3,
     "availability_nux": null,
     "upgrade": null,
     "base_instructions": "You are a coding agent working with a local runtime operator.",
@@ -291,8 +291,8 @@
     ],
     "supports_search_tool": false,
     "use_responses_lite": false,
-    "model": "gpt-5.5",
-    "displayName": "Fable 5 (Notion)",
+    "model": "opus-5",
+    "displayName": "Opus 5 (Notion)",
     "defaultReasoningEffort": "high",
     "supportedReasoningEfforts": [
       {

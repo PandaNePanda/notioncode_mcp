@@ -34,6 +34,21 @@ class ResponsesTextRegressionTests(unittest.TestCase):
         self.assertEqual(resolve_model("claude-opus-5"), "opus-5")
         self.assertEqual(resolve_model("best"), "opus-5")
 
+    def test_forced_opus_replaces_every_requested_model(self) -> None:
+        with patch.object(server, "FORCED_MODEL_ID", "opus-5"):
+            self.assertEqual(resolve_model("gpt-5.5"), "opus-5")
+            self.assertEqual(resolve_model("fable-5"), "opus-5")
+            self.assertEqual(resolve_model("gpt-5.6-sol"), "opus-5")
+            self.assertEqual(resolve_model("opus-5"), "opus-5")
+
+    def test_notion_model_stays_explicit_on_continuation(self) -> None:
+        config = server.notion_transcript.build_config_value(
+            notion_model="agave-flan",
+            is_subsequent_turn=True,
+        )
+        self.assertEqual(config["model"], "agave-flan")
+        self.assertIs(config["modelFromUser"], True)
+
     def test_input_image_does_not_replace_or_mutate_text(self) -> None:
         message = {
             "type": "message",
@@ -109,6 +124,75 @@ class ResponsesTextRegressionTests(unittest.TestCase):
         self.assertEqual(item["type"], "function_call")
         self.assertIn('"name": "update_plan"', chunks)
         self.assertIn("event: response.output_item.done", chunks)
+
+    def test_detects_malformed_textual_tool_call(self) -> None:
+        text = '{"tool":"exec_command","arguments":{"cmd":"bash -lc "cd /opt/app""}}'
+        tools = [{"type": "function", "name": "exec_command", "parameters": {}}]
+        self.assertEqual(
+            server.extract_malformed_responses_tool(text, tools),
+            "exec_command",
+        )
+
+    def test_detects_tool_with_noop_invoke_body_as_malformed(self) -> None:
+        text = '{"tool":"exec_command">\n{"function":"noop"}\n</invoke>'
+        tools = [{"type": "function", "name": "exec_command", "parameters": {}}]
+        self.assertIsNone(server.extract_responses_tool_call(text, tools))
+        self.assertEqual(
+            server.extract_malformed_responses_tool(text, tools),
+            "exec_command",
+        )
+
+    def test_converts_antml_parameters_to_function_call(self) -> None:
+        text = (
+            '{"tool":"exec_command","antml:parameter name="cmd">'
+            "bash -lc 'cd /opt/app && sed -n \"1,20p\" main.py'"
+            "</parameter>\n"
+            '<parameter name="yield_time_ms">120000</parameter>\n</invoke>'
+        )
+        tools = [{"type": "function", "name": "exec_command", "parameters": {}}]
+        tool_type, name, raw_arguments = server.extract_responses_tool_call(text, tools)
+        self.assertEqual(tool_type, "function")
+        self.assertEqual(name, "exec_command")
+        self.assertEqual(
+            json.loads(raw_arguments),
+            {
+                "cmd": "bash -lc 'cd /opt/app && sed -n \"1,20p\" main.py'",
+                "yield_time_ms": 120000,
+            },
+        )
+        _response, item = responses_payload(text, "opus-5", 10, 2, tools)
+        self.assertEqual(item["type"], "function_call")
+        self.assertEqual(item["name"], "exec_command")
+        self.assertEqual(json.loads(item["arguments"]), json.loads(raw_arguments))
+
+    def test_converts_standard_anthropic_invoke_markup(self) -> None:
+        text = (
+            '<invoke name="write_stdin">'
+            '<parameter name="session_id">42</parameter>'
+            '<parameter name="chars">y\\n</parameter>'
+            "</invoke>"
+        )
+        tools = [{"type": "function", "name": "write_stdin", "parameters": {}}]
+        tool_type, name, raw_arguments = server.extract_responses_tool_call(text, tools)
+        self.assertEqual(tool_type, "function")
+        self.assertEqual(name, "write_stdin")
+        self.assertEqual(
+            json.loads(raw_arguments),
+            {"session_id": 42, "chars": "y\\n"},
+        )
+
+    def test_does_not_flag_normal_text_or_valid_tool_call_as_malformed(self) -> None:
+        tools = [{"type": "function", "name": "exec_command", "parameters": {}}]
+        self.assertIsNone(
+            server.extract_malformed_responses_tool(
+                "I would use exec_command if another action were needed.", tools
+            )
+        )
+        self.assertIsNone(
+            server.extract_malformed_responses_tool(
+                '{"tool":"exec_command","arguments":{"cmd":"pwd"}}', tools
+            )
+        )
 
     def test_tool_loop_continuation_sends_only_new_tool_result(self) -> None:
         body = {

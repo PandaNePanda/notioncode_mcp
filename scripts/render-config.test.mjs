@@ -30,6 +30,9 @@ test("renders portable systemd service paths and user identity", () => {
       assert.match(rendered, /User=alice/);
       assert.match(rendered, /Environment=HOME=\/home\/alice/);
       assert.match(rendered, /\/srv\/notioncode/);
+      if (name === "notion-fable-proxy.service") {
+        assert.match(rendered, /Environment=NOTION_FORCE_MODEL=opus-5/);
+      }
       assert.doesNotMatch(rendered, /__[A-Z0-9_]+__/);
     }
   } finally {

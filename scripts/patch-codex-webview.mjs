@@ -6,8 +6,10 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const PATCH_MARKER = "notioncode-opus-5-picker";
+const HISTORY_PATCH_MARKER = "notioncode-all-history-providers";
 const MODEL_RESULT_PATTERN = /\{\s*models\s*:\s*([A-Za-z_$][\w$]*)\s*,\s*defaultModel\s*:\s*([A-Za-z_$][\w$]*)\s*,\s*hasModelSupportingMaxReasoningEffort\s*:\s*([A-Za-z_$][\w$]*)\s*,\s*hasModelSupportingUltraReasoningEffort\s*:\s*([A-Za-z_$][\w$]*)\s*\}/g;
 const KNOWN_FILTER_PATTERN = /models\s*:\s*[A-Za-z_$][\w$]*[\s\S]{0,200}defaultModel\s*:[\s\S]{0,200}hasModelSupportingMaxReasoningEffort/;
+const HISTORY_FILTER_PATTERN = /modelProviders:null/g;
 
 export function patchBundle(content) {
   const legacyPatchStart = content.indexOf(`{models:(()=>{/* ${PATCH_MARKER}`);
@@ -15,23 +17,42 @@ export function patchBundle(content) {
     const original = content.slice(0, legacyPatchStart);
     if (content.endsWith(original)) content = original;
   }
-  if (content.includes(PATCH_MARKER)) return { content, status: "already-patched" };
 
-  const matches = [...content.matchAll(MODEL_RESULT_PATTERN)];
-  if (matches.length === 0) return { content, status: "not-applicable" };
-  if (matches.length > 1) {
-    throw new Error(`Found ${matches.length} Codex model filters in one bundle; refusing an ambiguous patch.`);
+  let patched = false;
+  const modelAlreadyPatched = content.includes(PATCH_MARKER);
+  if (!modelAlreadyPatched) {
+    const matches = [...content.matchAll(MODEL_RESULT_PATTERN)];
+    if (matches.length > 1) {
+      throw new Error(`Found ${matches.length} Codex model filters in one bundle; refusing an ambiguous patch.`);
+    }
+
+    if (matches.length === 1) {
+      const match = matches[0];
+      const [matched, models, defaultModel, supportsMax, supportsUltra] = match;
+      const patchedModels = `(()=>{/* ${PATCH_MARKER} */if(!${models}.some(e=>e.model==="opus-5")){const e=${models}.find(e=>e.model==="gpt-5.6-sol")??${models}.find(e=>e.model==="gpt-5.5")??${models}[0];e&&${models}.push({...e,slug:"opus-5",id:"opus-5",model:"opus-5",display_name:"Opus 5 (Notion)",displayName:"Opus 5 (Notion)",description:"Notion Opus 5 through the local bridge.",isDefault:!1,is_default:!1})}return ${models}})()`;
+      const replacement = `{models:${patchedModels},defaultModel:${defaultModel},hasModelSupportingMaxReasoningEffort:${supportsMax},hasModelSupportingUltraReasoningEffort:${supportsUltra}}`;
+      const index = match.index;
+      content = content.slice(0, index) + replacement + content.slice(index + matched.length);
+      patched = true;
+    }
   }
 
-  const match = matches[0];
-  const [matched, models, defaultModel, supportsMax, supportsUltra] = match;
-  const patchedModels = `(()=>{/* ${PATCH_MARKER} */if(!${models}.some(e=>e.model==="opus-5")){const e=${models}.find(e=>e.model==="gpt-5.6-sol")??${models}.find(e=>e.model==="gpt-5.5")??${models}[0];e&&${models}.push({...e,slug:"opus-5",id:"opus-5",model:"opus-5",display_name:"Opus 5 (Notion)",displayName:"Opus 5 (Notion)",description:"Notion Opus 5 through the local bridge.",isDefault:!1,is_default:!1})}return ${models}})()`;
-  const replacement = `{models:${patchedModels},defaultModel:${defaultModel},hasModelSupportingMaxReasoningEffort:${supportsMax},hasModelSupportingUltraReasoningEffort:${supportsUltra}}`;
-  const index = match.index;
+  if (!content.includes(HISTORY_PATCH_MARKER) && HISTORY_FILTER_PATTERN.test(content)) {
+    HISTORY_FILTER_PATTERN.lastIndex = 0;
+    content = content.replaceAll(
+      "modelProviders:null",
+      `modelProviders:/* ${HISTORY_PATCH_MARKER} */[]`,
+    );
+    patched = true;
+  }
 
   return {
-    content: content.slice(0, index) + replacement + content.slice(index + matched.length),
-    status: "patched",
+    content,
+    status: patched
+      ? "patched"
+      : modelAlreadyPatched || content.includes(HISTORY_PATCH_MARKER)
+        ? "already-patched"
+        : "not-applicable",
   };
 }
 

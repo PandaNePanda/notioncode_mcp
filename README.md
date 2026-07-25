@@ -46,6 +46,11 @@ Codex использует совместимый ID `gpt-5.5` для Fable, а 
 обратно в `fable-5`. Исходная таблица внутренних aliases находится в
 `state-template/.notionagents/models.json`.
 
+Текущий Linux deployment принудительно направляет все transport model IDs в
+Opus 5 через `NOTION_FORCE_MODEL=opus-5`. Старые IDs остаются в каталоге, чтобы
+сохранённые Codex-треды продолжали открываться, но inference всегда выполняет
+`opus-5` / `agave-flan`.
+
 ## Быстрый выбор инструкции
 
 - Если установку делает человек: следуйте разделу для своей ОС ниже.

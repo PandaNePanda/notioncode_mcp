@@ -1,4 +1,4 @@
-model = "gpt-5.5"
+model = "opus-5"
 model_provider = "notion-ai"
 model_reasoning_effort = "high"
 model_context_window = 210000

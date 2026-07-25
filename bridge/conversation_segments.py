@@ -13,7 +13,8 @@ from typing import Any, AsyncIterator
 
 CONVERSATION_TTL = 30 * 24 * 60 * 60
 MAX_CONVERSATIONS = 500
-STATE_VERSION = 1
+# Version 2 invalidates bindings created while Notion recorded the thread as Auto.
+STATE_VERSION = 2
 
 
 def conversation_storage_key(key: str) -> str:

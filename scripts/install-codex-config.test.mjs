@@ -40,7 +40,7 @@ test("merges the provider without losing unrelated Codex settings", () => {
       'trust_level = "trusted"',
       "",
     ].join("\n"));
-    assert.match(output, /model = "gpt-5\.5"/);
+    assert.match(output, /model = "opus-5"/);
     assert.match(output, /model_provider = "notion-ai"/);
     assert.match(output, /model_context_window = 210000/);
     assert.match(output, /model_auto_compact_token_limit = 200000/);

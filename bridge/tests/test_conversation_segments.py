@@ -40,7 +40,7 @@ class ConversationSegmentTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("secret-codex-thread", raw)
             self.assertEqual(path.stat().st_mode & 0o777, 0o600)
             payload = json.loads(raw)
-            self.assertEqual(payload["version"], 1)
+            self.assertEqual(payload["version"], 2)
 
             restored = await ConversationSegmentStore(path).get("secret-codex-thread")
             self.assertIsNotNone(restored)

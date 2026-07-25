@@ -14,6 +14,7 @@ from typing import Any
 import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
+from notion_agent_cli import transcript as notion_transcript
 from notion_agent_cli.provider import NotionAgentClient
 
 from account_pool import (
@@ -54,7 +55,7 @@ from turn_affinity import (
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 ACCOUNT_HOME = Path(os.getenv("NOTION_AGENT_HOME", str(Path.home() / ".notionagents"))).expanduser()
-MODEL_ID = "fable-5"
+MODEL_ID = "opus-5"
 SUPPORTED_MODELS = ("fable-5", "gpt-5.6-sol", "opus-5")
 MODEL_DISPLAY_NAMES = {
     "fable-5": "Fable 5 (Notion)",
@@ -62,10 +63,23 @@ MODEL_DISPLAY_NAMES = {
     "opus-5": "Opus 5 (Notion)",
 }
 CODEX_FABLE_MODEL_ID = "gpt-5.5"
+FORCED_MODEL_ID = os.getenv("NOTION_FORCE_MODEL", "").strip().lower()
 REASONING_HEARTBEAT_SECONDS = 10
 WORKFLOW_ID = os.getenv("NOTION_WORKFLOW_ID", "")
 RUNTIME_ENV = Path(os.getenv("NOTION_RUNTIME_ENV", str(PROJECT_ROOT / "runtime" / ".env"))).expanduser()
 CODE_ROOT = Path(os.getenv("CODE_ROOT", str(Path.home()))).expanduser().resolve()
+
+
+_original_build_config_value = notion_transcript.build_config_value
+
+
+def _build_explicit_model_config(*args: Any, **kwargs: Any) -> dict[str, Any]:
+    config = _original_build_config_value(*args, **kwargs)
+    config["modelFromUser"] = True
+    return config
+
+
+notion_transcript.build_config_value = _build_explicit_model_config
 
 app = FastAPI(title="Notion AI bridge")
 account_pool: NotionAccountPool | None = None
@@ -449,6 +463,10 @@ def text_content(value: Any) -> str:
 
 def resolve_model(model: str | None) -> str:
     requested = (model or MODEL_ID).lower()
+    if FORCED_MODEL_ID:
+        if FORCED_MODEL_ID not in SUPPORTED_MODELS:
+            raise ValueError(f"unsupported forced model: {FORCED_MODEL_ID}")
+        return FORCED_MODEL_ID
     if requested == CODEX_FABLE_MODEL_ID:
         return "fable-5"
     if requested in SUPPORTED_MODELS:
@@ -810,6 +828,35 @@ def extract_responses_tool_call(
             if part.strip()
         )
     for candidate in candidates:
+        name_match = re.search(
+            r'["\'](?:tool|name)["\']\s*:\s*["\']([^"\']+)', candidate
+        ) or re.search(r'<invoke\s+name=["\']([^"\']+)', candidate)
+        if name_match and name_match.group(1) in by_name:
+            parameter_matches = re.findall(
+                r'(?:<(?:antml:)?parameter|["\']antml:parameter)\s+'
+                r'name=["\']([^"\']+)["\']>(.*?)</(?:antml:)?parameter>',
+                candidate,
+                flags=re.DOTALL,
+            )
+            if parameter_matches:
+                arguments: dict[str, Any] = {}
+                for key, raw_value in parameter_matches:
+                    raw_value = raw_value.strip()
+                    try:
+                        arguments[key] = json.loads(raw_value)
+                    except json.JSONDecodeError:
+                        arguments[key] = raw_value
+                name = name_match.group(1)
+                tool_type = str(by_name[name].get("type", "function"))
+                if tool_type == "custom":
+                    custom_input = (
+                        arguments.get("command")
+                        or arguments.get("cmd")
+                        or arguments.get("patch")
+                        or json.dumps(arguments, ensure_ascii=False)
+                    )
+                    return "custom", name, str(custom_input)
+                return "function", name, json.dumps(arguments, ensure_ascii=False)
         try:
             value = json.loads(candidate)
         except json.JSONDecodeError:
@@ -839,6 +886,33 @@ def extract_responses_tool_call(
                 continue
         if isinstance(arguments, dict):
             return "function", str(name), json.dumps(arguments, ensure_ascii=False)
+    return None
+
+
+def extract_malformed_responses_tool(
+    text: str, tools: list[dict[str, Any]]
+) -> str | None:
+    allowed = {
+        str(tool.get("name"))
+        for tool in tools
+        if isinstance(tool.get("name"), str)
+    }
+    candidates = [text.strip()]
+    if "```" in text:
+        candidates.extend(
+            part.strip().removeprefix("json").strip()
+            for part in text.split("```")
+            if part.strip()
+        )
+    for candidate in candidates:
+        if not candidate.startswith("{"):
+            continue
+        try:
+            json.loads(candidate)
+        except json.JSONDecodeError:
+            match = re.search(r'["\'](?:tool|name)["\']\s*:\s*["\']([^"\']+)', candidate)
+            if match and match.group(1) in allowed:
+                return match.group(1)
     return None
 
 
@@ -1484,6 +1558,13 @@ async def handle_openai_responses(
         model = resolve_model(requested_model)
     except ValueError as exc:
         return JSONResponse({"error": {"message": str(exc), "type": "invalid_request_error"}}, status_code=400)
+    log_event(
+        log,
+        "model_resolved",
+        requested_model=requested_model,
+        resolved_model=model,
+        forced=bool(FORCED_MODEL_ID),
+    )
     if account_pool is None or account_pool.size == 0:
         return JSONResponse({"error": {"message": "No valid Notion accounts are configured", "type": "api_error"}}, status_code=503)
     raw_tools = body.get("tools") or []
@@ -1673,16 +1754,50 @@ async def handle_openai_responses(
                 continuation_completion if can_continue else initial_completion,
                 retry_operation=initial_completion,
             )
-            valid_call = extract_responses_tool_call(completion.text, tools)
-            unavailable_tool = extract_unavailable_responses_tool(completion.text, tools)
-            if not is_compaction and tools and valid_call is None and (
-                looks_like_agent_refusal(completion.text) or unavailable_tool is not None
-            ):
+            log_event(
+                log,
+                "notion_model_selected",
+                resolved_model=model,
+                notion_model=getattr(completion, "model", None),
+                reported_notion_model=(
+                    completion.raw.get("reported_notion_model")
+                    if isinstance(getattr(completion, "raw", None), dict)
+                    else None
+                ),
+            )
+            for correction_attempt in range(3):
+                valid_call = extract_responses_tool_call(completion.text, tools)
+                malformed_tool = extract_malformed_responses_tool(completion.text, tools)
+                unavailable_tool = extract_unavailable_responses_tool(completion.text, tools)
+                needs_correction = (
+                    looks_like_agent_refusal(completion.text)
+                    or malformed_tool is not None
+                    or unavailable_tool is not None
+                )
+                if is_compaction or not tools or valid_call is not None or not needs_correction:
+                    break
+                if correction_attempt == 2:
+                    log_event(
+                        log,
+                        "planner_correction_exhausted",
+                        malformed_tool=malformed_tool,
+                        unavailable_tool=unavailable_tool,
+                    )
+                    break
                 thread_id = completion.thread_id
                 correction = (
                     f'The tool "{unavailable_tool}" is not available to the local operator. '
                     if unavailable_tool
+                    else f'The attempted call to "{malformed_tool}" was not valid JSON. '
+                    if malformed_tool
                     else "Your previous answer was not a valid planner recommendation. "
+                )
+                log_event(
+                    log,
+                    "planner_correction_requested",
+                    attempt=correction_attempt + 1,
+                    malformed_tool=malformed_tool,
+                    unavailable_tool=unavailable_tool,
                 )
                 completion = await lease.run(
                     lambda notion: complete_with_images(

@@ -30,6 +30,25 @@ test("repairs output duplicated by the legacy patcher", () => {
   assert.equal((result.content.match(/notioncode-opus-5-picker/g) || []).length, 1);
 });
 
+test("lists Codex history from every model provider", () => {
+  const historyFixture = "sendRequest('thread/list',{modelProviders:null});sendRequest('thread/list',{modelProviders:null});";
+  const first = patchBundle(historyFixture);
+  assert.equal(first.status, "patched");
+  assert.equal((first.content.match(/notioncode-all-history-providers/g) || []).length, 2);
+  assert.equal((first.content.match(/modelProviders:\/\* notioncode-all-history-providers \*\/\[\]/g) || []).length, 2);
+
+  const second = patchBundle(first.content);
+  assert.equal(second.status, "already-patched");
+  assert.equal(second.content, first.content);
+});
+
+test("adds the model and history compatibility patches together", () => {
+  const result = patchBundle(`${fixture};sendRequest('thread/list',{modelProviders:null})`);
+  assert.equal(result.status, "patched");
+  assert.match(result.content, /notioncode-opus-5-picker/);
+  assert.match(result.content, /notioncode-all-history-providers/);
+});
+
 test("patches installed VS Code and VS Code Server extensions", () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "notioncode-webview-"));
   try {
