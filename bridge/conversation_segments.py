@@ -51,6 +51,7 @@ class ConversationSegment:
     input_tokens: int
     output_tokens: int
     updated_at: float
+    model: str | None = None
 
 
 class ConversationSegmentStore:
@@ -93,6 +94,7 @@ class ConversationSegmentStore:
         turns: int,
         input_tokens: int,
         output_tokens: int,
+        model: str,
     ) -> None:
         if key is None:
             return
@@ -108,6 +110,7 @@ class ConversationSegmentStore:
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
                 updated_at=time.time(),
+                model=model,
             )
             self._cleanup_locked()
             self._save_locked()
@@ -159,6 +162,7 @@ class ConversationSegmentStore:
                     input_tokens=int(raw.get("input_tokens", 0)),
                     output_tokens=int(raw.get("output_tokens", 0)),
                     updated_at=float(raw.get("updated_at", 0)),
+                    model=(str(raw["model"]) if raw.get("model") else None),
                 )
         except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError):
             # State is an optimization. A corrupt/stale file must never prevent

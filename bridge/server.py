@@ -8,6 +8,7 @@ import re
 import time
 import uuid
 from pathlib import Path
+from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
 
 import httpx
@@ -61,6 +62,7 @@ MODEL_DISPLAY_NAMES = {
     "opus-5": "Opus 5 (Notion)",
 }
 CODEX_FABLE_MODEL_ID = "gpt-5.5"
+REASONING_HEARTBEAT_SECONDS = 10
 WORKFLOW_ID = os.getenv("NOTION_WORKFLOW_ID", "")
 RUNTIME_ENV = Path(os.getenv("NOTION_RUNTIME_ENV", str(PROJECT_ROOT / "runtime" / ".env"))).expanduser()
 CODE_ROOT = Path(os.getenv("CODE_ROOT", str(Path.home()))).expanduser().resolve()
@@ -879,8 +881,9 @@ def responses_payload(
     input_tokens: int,
     output_tokens: int,
     tools: list[dict[str, Any]],
+    response_id: str | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    response_id = f"resp_{uuid.uuid4().hex}"
+    response_id = response_id or f"resp_{uuid.uuid4().hex}"
     call = extract_responses_tool_call(text, tools)
     if call:
         tool_type, name, arguments = call
@@ -932,33 +935,34 @@ def responses_payload(
     return response, item
 
 
-def responses_sse(response: dict[str, Any], item: dict[str, Any]):
-    created = {**response, "status": "in_progress", "output": []}
+def responses_item_events(item: dict[str, Any], output_index: int) -> list[dict[str, Any]]:
     item_started = dict(item)
-    events: list[dict[str, Any]] = [
-        {"type": "response.created", "response": created},
-    ]
+    events: list[dict[str, Any]] = []
     if item["type"] == "message":
         part = item["content"][0]
         item_started["content"] = []
         empty_part = {**part, "text": ""}
         events.extend([
-            {"type": "response.output_item.added", "output_index": 0, "item": item_started},
+            {
+                "type": "response.output_item.added",
+                "output_index": output_index,
+                "item": item_started,
+            },
             {
                 "type": "response.content_part.added", "item_id": item["id"],
-                "output_index": 0, "content_index": 0, "part": empty_part,
+                "output_index": output_index, "content_index": 0, "part": empty_part,
             },
             {
                 "type": "response.output_text.delta", "item_id": item["id"],
-                "output_index": 0, "content_index": 0, "delta": part["text"],
+                "output_index": output_index, "content_index": 0, "delta": part["text"],
             },
             {
                 "type": "response.output_text.done", "item_id": item["id"],
-                "output_index": 0, "content_index": 0, "text": part["text"],
+                "output_index": output_index, "content_index": 0, "text": part["text"],
             },
             {
                 "type": "response.content_part.done", "item_id": item["id"],
-                "output_index": 0, "content_index": 0, "part": part,
+                "output_index": output_index, "content_index": 0, "part": part,
             },
         ])
     else:
@@ -967,17 +971,214 @@ def responses_sse(response: dict[str, Any], item: dict[str, Any]):
         elif item["type"] == "custom_tool_call":
             item_started["input"] = ""
         events.append({
-            "type": "response.output_item.added", "output_index": 0, "item": item_started,
+            "type": "response.output_item.added",
+            "output_index": output_index,
+            "item": item_started,
         })
-    events.extend([
-        {"type": "response.output_item.done", "output_index": 0, "item": item},
-        {"type": "response.completed", "response": response},
-    ])
+    events.append({
+        "type": "response.output_item.done",
+        "output_index": output_index,
+        "item": item,
+    })
+    return events
+
+
+def responses_sse(response: dict[str, Any], item: dict[str, Any]):
+    created = {**response, "status": "in_progress", "output": []}
+    events: list[dict[str, Any]] = [
+        {"type": "response.created", "response": created},
+    ]
+    events.extend(responses_item_events(item, 0))
+    events.append({"type": "response.completed", "response": response})
     for sequence_number, event in enumerate(events):
         event["sequence_number"] = sequence_number
         event_name = event["type"]
         yield f"event: {event_name}\ndata: {json.dumps(event, ensure_ascii=False)}\n\n".encode()
     yield b"data: [DONE]\n\n"
+
+
+def encode_responses_event(event: dict[str, Any], sequence_number: int) -> bytes:
+    event["sequence_number"] = sequence_number
+    return (
+        f"event: {event['type']}\n"
+        f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+    ).encode()
+
+
+async def stream_openai_responses(
+    body: dict[str, Any],
+    turn_key: str | None,
+    conversation_key: str | None,
+    request_kind: str,
+) -> AsyncIterator[bytes]:
+    response_id = f"resp_{uuid.uuid4().hex}"
+    reasoning_id = f"rs_{uuid.uuid4().hex}"
+    model = str(body.get("model") or MODEL_ID).lower()
+    created = {
+        "id": response_id,
+        "object": "response",
+        "created_at": int(time.time()),
+        "status": "in_progress",
+        "error": None,
+        "incomplete_details": None,
+        "model": model,
+        "output": [],
+    }
+    queue: asyncio.Queue[str | None] = asyncio.Queue()
+
+    async def on_thinking_delta(delta: str) -> None:
+        if delta:
+            await queue.put(delta)
+
+    async def run_request():
+        try:
+            async with conversation_segments.lock(conversation_key):
+                async with turn_affinities.lock(turn_key):
+                    return await handle_openai_responses(
+                        {**body, "stream": False},
+                        turn_key,
+                        conversation_key=conversation_key,
+                        request_kind=request_kind,
+                        on_thinking_delta_async=on_thinking_delta,
+                        response_id=response_id,
+                    )
+        finally:
+            queue.put_nowait(None)
+
+    task = asyncio.create_task(run_request())
+    sequence_number = 0
+    reasoning_started = True
+    started_at = time.monotonic()
+    thinking = f"Notion {model} is working…"
+    try:
+        yield encode_responses_event(
+            {"type": "response.created", "response": created},
+            sequence_number,
+        )
+        sequence_number += 1
+        reasoning_item = {
+            "type": "reasoning",
+            "id": reasoning_id,
+            "summary": [],
+            "content": [],
+            "encrypted_content": None,
+        }
+        yield encode_responses_event({
+            "type": "response.output_item.added",
+            "output_index": 0,
+            "item": reasoning_item,
+        }, sequence_number)
+        sequence_number += 1
+        yield encode_responses_event({
+            "type": "response.reasoning_summary_part.added",
+            "item_id": reasoning_id,
+            "output_index": 0,
+            "summary_index": 0,
+            "part": {"type": "summary_text", "text": ""},
+        }, sequence_number)
+        sequence_number += 1
+        yield encode_responses_event({
+            "type": "response.reasoning_summary_text.delta",
+            "item_id": reasoning_id,
+            "output_index": 0,
+            "summary_index": 0,
+            "delta": thinking,
+        }, sequence_number)
+        sequence_number += 1
+        while True:
+            try:
+                delta = await asyncio.wait_for(
+                    queue.get(),
+                    timeout=REASONING_HEARTBEAT_SECONDS,
+                )
+            except asyncio.TimeoutError:
+                elapsed = round(time.monotonic() - started_at)
+                delta = f"\nStill working… {elapsed}s"
+            if delta is None:
+                break
+            thinking += delta
+            yield encode_responses_event({
+                "type": "response.reasoning_summary_text.delta",
+                "item_id": reasoning_id,
+                "output_index": 0,
+                "summary_index": 0,
+                "delta": delta,
+            }, sequence_number)
+            sequence_number += 1
+
+        result = await task
+        if isinstance(result, JSONResponse):
+            payload = json.loads(result.body)
+            error = payload.get("error", {"message": "Notion request failed"})
+            failed = {**created, "status": "failed", "error": error}
+            yield encode_responses_event(
+                {"type": "response.failed", "response": failed},
+                sequence_number,
+            )
+            yield b"data: [DONE]\n\n"
+            return
+
+        reasoning_item = None
+        if reasoning_started:
+            reasoning_item = {
+                "type": "reasoning",
+                "id": reasoning_id,
+                "summary": [{"type": "summary_text", "text": thinking}],
+                "content": [],
+                "encrypted_content": None,
+            }
+            yield encode_responses_event({
+                "type": "response.reasoning_summary_text.done",
+                "item_id": reasoning_id,
+                "output_index": 0,
+                "summary_index": 0,
+                "text": thinking,
+            }, sequence_number)
+            sequence_number += 1
+            yield encode_responses_event({
+                "type": "response.reasoning_summary_part.done",
+                "item_id": reasoning_id,
+                "output_index": 0,
+                "summary_index": 0,
+                "part": {"type": "summary_text", "text": thinking},
+            }, sequence_number)
+            sequence_number += 1
+            yield encode_responses_event({
+                "type": "response.output_item.done",
+                "output_index": 0,
+                "item": reasoning_item,
+            }, sequence_number)
+            sequence_number += 1
+
+        final_item = result["output"][0]
+        final_index = 1 if reasoning_started else 0
+        for event in responses_item_events(final_item, final_index):
+            yield encode_responses_event(event, sequence_number)
+            sequence_number += 1
+        if reasoning_item is not None:
+            result = {**result, "output": [reasoning_item, final_item]}
+        yield encode_responses_event(
+            {"type": "response.completed", "response": result},
+            sequence_number,
+        )
+        yield b"data: [DONE]\n\n"
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        failed = {
+            **created,
+            "status": "failed",
+            "error": {"message": str(exc), "type": type(exc).__name__},
+        }
+        yield encode_responses_event(
+            {"type": "response.failed", "response": failed},
+            sequence_number,
+        )
+        yield b"data: [DONE]\n\n"
+    finally:
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
 
 
 def extract_anthropic_tool_call(
@@ -1251,6 +1452,11 @@ async def openai_responses(request: Request):
         "request_details",
         tool_count=len(body.get("tools") or []) if isinstance(body.get("tools") or [], list) else 0,
     )
+    if body.get("stream", False):
+        return StreamingResponse(
+            stream_openai_responses(body, turn_key, conversation_key, request_kind),
+            media_type="text/event-stream",
+        )
     async with conversation_segments.lock(conversation_key):
         async with turn_affinities.lock(turn_key):
             return await handle_openai_responses(
@@ -1267,6 +1473,8 @@ async def handle_openai_responses(
     *,
     conversation_key: str | None = None,
     request_kind: str | None = None,
+    on_thinking_delta_async: Callable[[str], Awaitable[None]] | None = None,
+    response_id: str | None = None,
 ):
     conversation_key = conversation_key or codex_conversation_key(body)
     request_kind = request_kind or codex_request_kind(body)
@@ -1288,13 +1496,18 @@ async def handle_openai_responses(
     ) if isinstance(raw_tools, list) else False
     affinity = await turn_affinities.get(turn_key)
     segment = await conversation_segments.get(conversation_key)
+    affinity_matches_model = affinity is not None and affinity.model == model
     log_event(
         log,
         "turn_affinity_checked",
-        affinity="reused" if affinity is not None else "new",
-        preferred_account_id=affinity.account_id if affinity is not None else None,
+        affinity=(
+            "reused" if affinity_matches_model else
+            "model_changed" if affinity is not None else
+            "new"
+        ),
+        preferred_account_id=affinity.account_id if affinity_matches_model else None,
         notion_thread_id=(
-            correlation_id(affinity.notion_thread_id) if affinity is not None else None
+            correlation_id(affinity.notion_thread_id) if affinity_matches_model else None
         ),
     )
     current_fingerprints = response_input_fingerprints(body)
@@ -1305,6 +1518,8 @@ async def handle_openai_responses(
     rollover_reason: str | None = None
     if segment is not None and segment.awaiting_compacted_history and not is_compaction:
         rollover_reason = "post_compaction"
+    elif segment is not None and segment.model != model:
+        rollover_reason = "model_changed"
     elif segment is not None and segment_prefix is None:
         rollover_reason = "history_rewritten"
     log_event(
@@ -1323,7 +1538,8 @@ async def handle_openai_responses(
     )
     input_fingerprint = response_input_fingerprint(body)
     if (
-        affinity is not None
+        affinity_matches_model
+        and affinity is not None
         and affinity.input_fingerprint == input_fingerprint
         and affinity.completion_text
     ):
@@ -1334,6 +1550,7 @@ async def handle_openai_responses(
             affinity.input_tokens,
             affinity.output_tokens,
             tools,
+            response_id=response_id,
         )
         if not body.get("stream", False):
             return cached_response
@@ -1346,7 +1563,7 @@ async def handle_openai_responses(
     anchor = None
     previous_input_count: int | None = None
     if rollover_reason is None:
-        if affinity is not None:
+        if affinity_matches_model and affinity is not None:
             anchor = affinity
             previous_input_count = affinity.input_count
         elif segment is not None and segment_prefix is not None:
@@ -1400,7 +1617,7 @@ async def handle_openai_responses(
         recovery_images = (
             full_images if full_images is not None else extract_response_images(body)
         )
-        if recovery_images:
+        if recovery_images or on_thinking_delta_async is not None:
             return await complete_with_images(
                 notion,
                 prompt=full_prompt,
@@ -1409,6 +1626,7 @@ async def handle_openai_responses(
                 web_search=web_search_requested,
                 workspace_search=False,
                 ask_mode=True,
+                on_thinking_delta_async=on_thinking_delta_async,
             )
         return await notion.complete(
             prompt=full_prompt,
@@ -1421,7 +1639,7 @@ async def handle_openai_responses(
     async def continuation_completion(notion: NotionAgentClient):
         if anchor is None or incremental_prompt is None:
             return await initial_completion(notion)
-        if incremental_images:
+        if incremental_images or on_thinking_delta_async is not None:
             return await complete_with_images(
                 notion,
                 prompt=incremental_prompt,
@@ -1431,6 +1649,7 @@ async def handle_openai_responses(
                 workspace_search=False,
                 ask_mode=True,
                 thread_id=anchor.notion_thread_id,
+                on_thinking_delta_async=on_thinking_delta_async,
             )
         return await notion.complete(
             prompt=incremental_prompt,
@@ -1466,18 +1685,21 @@ async def handle_openai_responses(
                     else "Your previous answer was not a valid planner recommendation. "
                 )
                 completion = await lease.run(
-                    lambda notion: notion.complete(
+                    lambda notion: complete_with_images(
+                        notion,
                         prompt=(
                             correction
                             + "Use only an exact tool from the catalog already provided when another "
                             "local action is necessary. If the requested information is already visible "
                             "in the conversation, answer the user normally instead of emitting JSON."
                         ),
+                        images=[],
                         model=model,
                         web_search=web_search_requested,
                         workspace_search=False,
                         ask_mode=True,
                         thread_id=thread_id,
+                        on_thinking_delta_async=on_thinking_delta_async,
                     ),
                     retry_operation=initial_completion,
                 )
@@ -1490,6 +1712,7 @@ async def handle_openai_responses(
                 completion_text=completion.text,
                 input_tokens=completion.usage.input_tokens,
                 output_tokens=completion.usage.output_tokens,
+                model=model,
             )
             next_segment_index = (
                 0 if segment is None else
@@ -1506,6 +1729,7 @@ async def handle_openai_responses(
                 turns=(segment.turns + 1 if segment is not None else 1),
                 input_tokens=completion.usage.input_tokens,
                 output_tokens=completion.usage.output_tokens,
+                model=model,
             )
             log_event(
                 log,
@@ -1564,6 +1788,7 @@ async def handle_openai_responses(
         completion.usage.input_tokens,
         completion.usage.output_tokens,
         tools,
+        response_id=response_id,
     )
     if not body.get("stream", False):
         return response
@@ -1612,7 +1837,11 @@ async def handle_openai_compaction(
         )
     input_fingerprint = response_input_fingerprint(body)
     affinity = await turn_affinities.get(turn_key)
-    if affinity is not None and affinity.input_fingerprint == input_fingerprint:
+    if (
+        affinity is not None
+        and affinity.model == model
+        and affinity.input_fingerprint == input_fingerprint
+    ):
         log_event(log, "compaction_cache_hit", account_id=affinity.account_id)
         return compact_payload(affinity.completion_text, turn_key)
 
@@ -1622,7 +1851,7 @@ async def handle_openai_compaction(
         input_prefix_length(segment.input_fingerprints, current_fingerprints)
         if segment is not None else None
     )
-    continuing = segment is not None and prefix is not None
+    continuing = segment is not None and segment.model == model and prefix is not None
     incremental_body = (
         responses_incremental_body(body, prefix)
         if continuing and prefix is not None else None
@@ -1684,6 +1913,7 @@ async def handle_openai_compaction(
                 completion_text=completion.text,
                 input_tokens=completion.usage.input_tokens,
                 output_tokens=completion.usage.output_tokens,
+                model=model,
             )
             await conversation_segments.put(
                 conversation_key,
@@ -1695,6 +1925,7 @@ async def handle_openai_compaction(
                 turns=(segment.turns + 1 if segment is not None else 1),
                 input_tokens=completion.usage.input_tokens,
                 output_tokens=completion.usage.output_tokens,
+                model=model,
             )
             log_event(
                 log,

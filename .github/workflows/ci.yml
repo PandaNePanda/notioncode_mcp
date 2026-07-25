@@ -34,6 +34,7 @@ jobs:
       - run: npm --prefix runtime run check
       - run: npm --prefix notion-private-api-mcp run check
       - run: node --test scripts/install-codex-config.test.mjs
+      - run: node --test scripts/patch-codex-webview.test.mjs
       - run: node --test scripts/render-config.test.mjs
       - run: node scripts/check-layout.mjs
       - run: node scripts/check-public-release.mjs

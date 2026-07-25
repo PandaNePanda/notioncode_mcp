@@ -70,27 +70,62 @@ function responsePayload(model, item = null) {
 
 function writeSse(response, completed) {
   const item = completed.output[0];
+  const reasoning = {
+    type: "reasoning",
+    id: "rs_codex_contract",
+    summary: [{ type: "summary_text", text: "Checking the Codex contract." }],
+    content: [],
+    encrypted_content: null,
+  };
+  const completedWithReasoning = { ...completed, output: [reasoning, item] };
   const events = [
     { type: "response.created", response: { ...completed, status: "in_progress", output: [] } },
     {
       type: "response.output_item.added",
       output_index: 0,
+      item: { ...reasoning, summary: [] },
+    },
+    {
+      type: "response.reasoning_summary_part.added",
+      item_id: reasoning.id,
+      output_index: 0,
+      summary_index: 0,
+      part: { type: "summary_text", text: "" },
+    },
+    {
+      type: "response.reasoning_summary_text.delta",
+      item_id: reasoning.id,
+      output_index: 0,
+      summary_index: 0,
+      delta: reasoning.summary[0].text,
+    },
+    {
+      type: "response.reasoning_summary_text.done",
+      item_id: reasoning.id,
+      output_index: 0,
+      summary_index: 0,
+      text: reasoning.summary[0].text,
+    },
+    { type: "response.output_item.done", output_index: 0, item: reasoning },
+    {
+      type: "response.output_item.added",
+      output_index: 1,
       item: item.type === "message"
         ? { ...item, content: [] }
         : item.type === "custom_tool_call"
           ? { ...item, input: "" }
           : { ...item, arguments: "" },
     },
-    { type: "response.output_item.done", output_index: 0, item },
-    { type: "response.completed", response: completed },
+    { type: "response.output_item.done", output_index: 1, item },
+    { type: "response.completed", response: completedWithReasoning },
   ];
   if (item.type === "message") {
     const part = item.content[0];
-    events.splice(2, 0,
-      { type: "response.content_part.added", item_id: item.id, output_index: 0, content_index: 0, part: { ...part, text: "" } },
-      { type: "response.output_text.delta", item_id: item.id, output_index: 0, content_index: 0, delta: part.text },
-      { type: "response.output_text.done", item_id: item.id, output_index: 0, content_index: 0, text: part.text },
-      { type: "response.content_part.done", item_id: item.id, output_index: 0, content_index: 0, part },
+    events.splice(events.length - 2, 0,
+      { type: "response.content_part.added", item_id: item.id, output_index: 1, content_index: 0, part: { ...part, text: "" } },
+      { type: "response.output_text.delta", item_id: item.id, output_index: 1, content_index: 0, delta: part.text },
+      { type: "response.output_text.done", item_id: item.id, output_index: 1, content_index: 0, text: part.text },
+      { type: "response.content_part.done", item_id: item.id, output_index: 1, content_index: 0, part },
     );
   }
   response.writeHead(200, {
@@ -247,6 +282,7 @@ try {
     input: [{ type: "text", text: "Reply with the contract marker only." }],
   });
   const completed = await waitFor("turn/completed");
+  await waitFor("item/reasoning/summaryTextDelta");
   if (!requests.length) throw new Error("Codex did not call /v1/responses");
   const request = requests[0];
   if (request.model !== "gpt-5.5" || request.stream !== true) {

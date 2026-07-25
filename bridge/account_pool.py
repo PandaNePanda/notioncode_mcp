@@ -25,6 +25,10 @@ from diagnostics import exception_fields, log_event
 
 MAX_ACCOUNTS = 10
 MAX_REASONING_EFFORT = "high"
+INFERENCE_TIMEOUT_SECONDS = max(
+    1.0,
+    float(os.getenv("NOTION_INFERENCE_TIMEOUT_SECONDS", "180")),
+)
 DEFAULT_TRANSIENT_COOLDOWN = 30
 DEFAULT_DENIAL_COOLDOWN = 300
 GLOBAL_FAILURE_WINDOW = 30
@@ -540,7 +544,10 @@ class AccountLease:
         while True:
             started_at = time.monotonic()
             try:
-                result = await active_operation(self.client)
+                result = await asyncio.wait_for(
+                    active_operation(self.client),
+                    timeout=INFERENCE_TIMEOUT_SECONDS,
+                )
                 if self._slot is not None:
                     await self._pool._record_success(
                         self._slot,
@@ -558,6 +565,21 @@ class AccountLease:
                         duration_ms=round((time.monotonic() - started_at) * 1000),
                     )
                 raise
+            except asyncio.TimeoutError as error:
+                if self._slot is not None:
+                    log_event(
+                        log,
+                        "account_request_timed_out",
+                        level=logging.WARNING,
+                        account_number=self._slot.number,
+                        account_id=self._slot.account_id,
+                        account_file=self._pool._account_file(self._slot),
+                        duration_ms=round((time.monotonic() - started_at) * 1000),
+                        timeout_seconds=INFERENCE_TIMEOUT_SECONDS,
+                    )
+                raise TimeoutError(
+                    f"Notion inference exceeded {INFERENCE_TIMEOUT_SECONDS:g} seconds"
+                ) from error
             except Exception as error:
                 if not is_failover_error(error):
                     if self._slot is not None:

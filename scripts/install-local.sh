@@ -88,6 +88,7 @@ run_as_service_user node "${ROOT}/scripts/render-config.mjs" \
 run_as_service_user node "${ROOT}/scripts/install-codex-config.mjs" \
   "${ROOT}/config/codex-cli-config.toml" "${CODEX_HOME}/config.toml" "${ROOT}" "${USER_HOME}" \
   "${NOTION_MCP_ENABLED}"
+run_as_service_user node "${ROOT}/scripts/patch-codex-webview.mjs" "${USER_HOME}"
 
 ln -sfn "${ROOT}/.runtime/notion-agent-cli-venv" "${USER_SHARE}/notion-agent-cli-venv"
 chown -h "${SERVICE_USER}:$(id -gn "${SERVICE_USER}")" "${USER_SHARE}/notion-agent-cli-venv"

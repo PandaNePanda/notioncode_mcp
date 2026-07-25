@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 import json
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import server
 from server import (
@@ -16,6 +17,7 @@ from server import (
     responses_sse,
     responses_tool_catalog,
     resolve_model,
+    stream_openai_responses,
 )
 from conversation_segments import ConversationSegmentStore
 from turn_affinity import TurnAffinityStore
@@ -140,7 +142,177 @@ class ResponsesTextRegressionTests(unittest.TestCase):
         self.assertIn("checkpoint with image facts", text)
 
 
+class ResponsesThinkingStreamTests(unittest.IsolatedAsyncioTestCase):
+    async def test_emits_progress_heartbeat_while_notion_is_silent(self) -> None:
+        async def slow_handle(
+            _body,
+            _turn_key,
+            *,
+            response_id=None,
+            **_kwargs,
+        ):
+            await server.asyncio.sleep(0.03)
+            response, _item = responses_payload(
+                "done",
+                "opus-5",
+                10,
+                5,
+                [],
+                response_id=response_id,
+            )
+            return response
+
+        with (
+            patch.object(server, "handle_openai_responses", slow_handle),
+            patch.object(server, "REASONING_HEARTBEAT_SECONDS", 0.01),
+        ):
+            text = b"".join([
+                chunk
+                async for chunk in stream_openai_responses(
+                    {"model": "opus-5", "stream": True},
+                    "turn-heartbeat",
+                    "conversation-heartbeat",
+                    "turn",
+                )
+            ]).decode()
+
+        self.assertIn("Still working", text)
+
+    async def test_streams_reasoning_before_buffered_tool_call(self) -> None:
+        async def fake_handle(
+            _body,
+            _turn_key,
+            *,
+            on_thinking_delta_async=None,
+            response_id=None,
+            **_kwargs,
+        ):
+            await on_thinking_delta_async("Reading ")
+            await on_thinking_delta_async("bench.txt")
+            response, _item = responses_payload(
+                '{"tool":"update_plan","arguments":{"plan":[]}}',
+                "opus-5",
+                10,
+                5,
+                [{"type": "function", "name": "update_plan"}],
+                response_id=response_id,
+            )
+            return response
+
+        with patch.object(server, "handle_openai_responses", fake_handle):
+            chunks = [
+                chunk
+                async for chunk in stream_openai_responses(
+                    {"model": "opus-5", "stream": True},
+                    "turn-thinking",
+                    "conversation-thinking",
+                    "turn",
+                )
+            ]
+
+        text = b"".join(chunks).decode()
+        events = [
+            json.loads(line.removeprefix("data: "))
+            for line in text.splitlines()
+            if line.startswith("data: {")
+        ]
+        event_types = [event["type"] for event in events]
+        self.assertLess(
+            event_types.index("response.reasoning_summary_text.delta"),
+            event_types.index("response.output_item.done"),
+        )
+        reasoning_deltas = [
+            event["delta"]
+            for event in events
+            if event["type"] == "response.reasoning_summary_text.delta"
+        ]
+        self.assertEqual(reasoning_deltas[-2:], ["Reading ", "bench.txt"])
+        self.assertIn("Notion opus-5 is working", reasoning_deltas[0])
+        self.assertNotIn("response.output_text.delta", event_types)
+        completed = next(
+            event for event in events if event["type"] == "response.completed"
+        )
+        self.assertEqual(
+            [item["type"] for item in completed["response"]["output"]],
+            ["reasoning", "function_call"],
+        )
+        self.assertEqual(
+            [event["sequence_number"] for event in events],
+            list(range(len(events))),
+        )
+
+
 class ResponsesAffinityIntegrationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_model_change_starts_a_new_notion_thread(self) -> None:
+        calls = []
+
+        class Client:
+            async def complete(self, **kwargs):
+                calls.append(kwargs)
+                return SimpleNamespace(
+                    text=f"answer from {kwargs['model']}",
+                    thread_id=f"thread-{len(calls)}",
+                    usage=SimpleNamespace(input_tokens=10, output_tokens=2),
+                )
+
+        class Lease:
+            account_id = "account-a"
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return None
+
+            async def run(self, operation, *, retry_operation=None):
+                return await operation(Client())
+
+        class Pool:
+            size = 1
+
+            def __init__(self):
+                self.preferred = []
+
+            def lease(self, preferred_account_id=None):
+                self.preferred.append(preferred_account_id)
+                return Lease()
+
+        pool = Pool()
+        original_pool = server.account_pool
+        original_affinities = server.turn_affinities
+        original_segments = server.conversation_segments
+        server.account_pool = pool
+        server.turn_affinities = TurnAffinityStore()
+        server.conversation_segments = ConversationSegmentStore()
+        try:
+            first_input = [{"type": "message", "role": "user", "content": "first"}]
+            await handle_openai_responses(
+                {"model": "fable-5", "input": first_input},
+                "turn-1",
+                conversation_key="codex-thread",
+            )
+            second_input = [
+                *first_input,
+                {"type": "message", "role": "assistant", "content": "previous"},
+                {"type": "message", "role": "user", "content": "use opus"},
+            ]
+            await handle_openai_responses(
+                {"model": "opus-5", "input": second_input},
+                "turn-2",
+                conversation_key="codex-thread",
+            )
+            segment = await server.conversation_segments.get("codex-thread")
+        finally:
+            server.account_pool = original_pool
+            server.turn_affinities = original_affinities
+            server.conversation_segments = original_segments
+
+        self.assertEqual([call["model"] for call in calls], ["fable-5", "opus-5"])
+        self.assertNotIn("thread_id", calls[1])
+        self.assertEqual(pool.preferred, [None, None])
+        self.assertIsNotNone(segment)
+        self.assertEqual(segment.model, "opus-5")
+
     async def test_same_codex_turn_reuses_account_and_notion_thread(self) -> None:
         calls = []
         replies = [

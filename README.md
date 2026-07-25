@@ -25,11 +25,13 @@ AI-инструменты.
 - официальный `openai.chatgpt` в VS Code без подмены бинарника Codex;
 - OpenAI Responses, Chat Completions и Anthropic Messages compatibility;
 - нативные function/custom tools, `apply_patch`, shell, планы, skills и MCP;
+- потоковый Notion thinking и progress heartbeat в reasoning-панели Codex при
+  сохранении нативных tool calls;
 - PNG, JPEG, GIF и WebP как нативные вложения Notion;
 - до 10 независимых Notion-сессий с persistent balancing и failover;
 - продолжение одной Codex-сессии в одном Notion-треде без повторной отправки
   всей истории;
-- штатная Codex compaction на 60 000 токенов и rollover на новый аккаунт;
+- штатная Codex compaction на 200 000 токенов и rollover на новый аккаунт;
 - одинаковый shared-код на Linux и Windows.
 
 Поддерживаемые модели bridge:
@@ -101,8 +103,10 @@ Installer:
 3. генерирует локальный MCP secret;
 4. добавляет managed-блок в `~/.codex/config.toml`, сохраняя другие настройки;
    без локального account-файла `notion-private` MCP остаётся выключенным;
-5. рендерит systemd units под фактический путь репозитория;
-6. запускает bridge на `127.0.0.1:8765` и runtime на `127.0.0.1:8787`.
+5. применяет idempotent compatibility patch model picker установленного
+   `openai.chatgpt`, чтобы в списке был доступен `Opus 5 (Notion)`;
+6. рендерит systemd units под фактический путь репозитория;
+7. запускает bridge на `127.0.0.1:8765` и runtime на `127.0.0.1:8787`.
 
 ### 3. Добавить Notion-сессию безопасным способом
 
@@ -194,9 +198,12 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
 Дополнительный `chatgpt.cliExecutable` не нужен. Расширение и Codex CLI читают
 один стандартный `~/.codex/config.toml`. Installer обновляет только блоки между
 маркерами `BEGIN/END notioncode_mcp` и делает backup перед изменением.
+Некоторые версии официального расширения скрывают неизвестные transport IDs;
+installer автоматически и idempotent-патчит этот фильтр. После обновления
+`openai.chatgpt` повторно запустите installer и выполните Reload Window.
 
-Для длинных диалогов каталог моделей сообщает контекст 100 000 токенов,
-auto-compaction запускается на 60 000 total tokens, а output tools ограничен
+Для длинных диалогов каталог моделей сообщает контекст 210 000 токенов,
+auto-compaction запускается на 200 000 total tokens, а output tools ограничен
 12 000 токенов. Bridge поддерживает и обычный compaction-turn, и
 `POST /v1/responses/compact`.
 
@@ -208,11 +215,11 @@ auto-compaction запускается на 60 000 total tokens, а output tools
 
 | Лимит | Текущее значение | Где менять |
 |---|---:|---|
-| Заявленное окно Codex | 100 000 токенов | `model_context_window` в `config/codex-cli-config.toml`; `context_window` и `max_context_window` у обеих моделей и `defaultModel` в `config/codex-models.json` |
-| Порог auto-compaction | 60 000 total tokens | `model_auto_compact_token_limit` в `config/codex-cli-config.toml`; `auto_compact_token_limit` у обеих моделей и `defaultModel` в `config/codex-models.json` |
+| Заявленное окно Codex | 210 000 токенов | `model_context_window` в `config/codex-cli-config.toml`; `context_window` и `max_context_window` у всех моделей и `defaultModel` в `config/codex-models.json` |
+| Порог auto-compaction | 200 000 total tokens | `model_auto_compact_token_limit` в `config/codex-cli-config.toml`; `auto_compact_token_limit` у всех моделей и `defaultModel` в `config/codex-models.json` |
 | Область подсчёта compaction | `total` — input + output | `model_auto_compact_token_limit_scope` в `config/codex-cli-config.toml` |
-| Эффективная доля окна | 90% | `effective_context_window_percent` у обеих моделей и `defaultModel` в `config/codex-models.json` |
-| Truncation policy каталога | 10 000 токенов | `truncation_policy.limit` у обеих моделей и `defaultModel` в `config/codex-models.json` |
+| Эффективная доля окна | 100% | `effective_context_window_percent` у всех моделей и `defaultModel` в `config/codex-models.json` |
+| Truncation policy каталога | 10 000 токенов | `truncation_policy.limit` у всех моделей и `defaultModel` в `config/codex-models.json` |
 | Вывод tools в Codex-контексте | 12 000 токенов | `tool_output_token_limit` в `config/codex-cli-config.toml` |
 | Окно OpenCode | 100 000 токенов | `provider.notion-fable.models.*.limit.context` в `config/opencode.jsonc` |
 | Заявленный output OpenCode | 40 000 токенов | `provider.notion-fable.models.*.limit.output` в `config/opencode.jsonc` |
@@ -228,9 +235,9 @@ Anthropic-совместимого endpoint использует приблиз�
 20 MiB на одно изображение и 50 MiB суммарно. Это byte/count-ограничения, а не
 фиксированный токен-бюджет.
 
-При изменении значений держите одинаковые параметры обеих моделей и
+При изменении значений держите одинаковые параметры всех моделей и
 `defaultModel`. Порог auto-compaction должен оставаться ниже эффективного окна:
-при текущих настройках `60 000 < 100 000 × 90%`. После изменения повторно
+при текущих настройках `200 000 < 210 000 × 100%`. После изменения повторно
 запустите штатный installer, выполните `Developer: Reload Window` и создайте
 новый чат. OpenCode также получает обновлённый config только после повторного
 installer/перезапуска.
@@ -309,8 +316,8 @@ user автоматически исключаются; больше 10 уник
 11. Сообщи факты: ОС, путь установки, число configured/ready/cooldown accounts,
     состояние сервисов и результат проверки. Не обещай отсутствие будущих
     ошибок внешнего API.
-12. Предупреди пользователя о текущих настраиваемых лимитах: окно 100 000
-    токенов, auto-compaction на 60 000 total tokens и tool output 12 000
+12. Предупреди пользователя о текущих настраиваемых лимитах: окно 210 000
+    токенов, auto-compaction на 200 000 total tokens и tool output 12 000
     токенов. Дай ссылку на раздел
     [«Лимиты контекста и токенов»](#лимиты-контекста-и-токенов) и сообщи, что
     значения можно изменить до начала длинной рабочей сессии.
@@ -327,7 +334,8 @@ user автоматически исключаются; больше 10 уник
 - bridge и runtime запущены;
 - `~/.codex/config.toml` содержит provider `notion-ai`;
 - `mcp_servers.notion-private.enabled == true` только после успешного `doctor`;
-- новый Codex-чат видит `Fable 5 (Notion)`.
+- новый Codex-чат видит `Fable 5 (Notion)`, `GPT-5.6 Sol (Notion)` и
+  `Opus 5 (Notion)`.
 
 Для coding-агентов дополнительные repository rules находятся в
 [`AGENTS.md`](AGENTS.md).
@@ -428,7 +436,9 @@ sudo -u "$USER" -H "$PWD/.runtime/notion-agent-cli-venv/bin/notion-agent" \
 
 Убедитесь, что health успешен, затем выполните `Developer: Reload Window` и
 создайте новый чат. Уже открытый app-server может продолжать использовать
-конфигурацию, загруженную до установки.
+конфигурацию, загруженную до установки. Если пропал только Opus после обновления
+расширения, повторно запустите штатный installer: он восстановит compatibility
+patch model picker без переустановки `openai.chatgpt`.
 
 ### На Windows не получается переключиться с GPT-5.6 обратно на Fable 5
 
@@ -499,6 +509,7 @@ npm --prefix runtime test
 npm --prefix runtime run check
 npm --prefix notion-private-api-mcp run check
 node --test scripts/install-codex-config.test.mjs
+node --test scripts/patch-codex-webview.test.mjs
 node --test scripts/render-config.test.mjs
 node scripts/check-layout.mjs
 node scripts/check-public-release.mjs

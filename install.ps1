@@ -63,6 +63,8 @@ if (-not (Test-Path $RuntimeEnv)) {
 
 & node.exe (Join-Path $Root "scripts\install-codex-config.mjs") (Join-Path $Root "config\codex-cli-config.toml") (Join-Path $CodexHome "config.toml") $Root $HOME $NotionMcpEnabled
 if ($LASTEXITCODE -ne 0) { throw "Codex configuration generation failed." }
+& node.exe (Join-Path $Root "scripts\patch-codex-webview.mjs") $HOME
+if ($LASTEXITCODE -ne 0) { throw "Codex VS Code webview compatibility patch failed." }
 & node.exe (Join-Path $Root "scripts\render-config.mjs") (Join-Path $Root "config\opencode.jsonc") (Join-Path $OpenCodeHome "opencode.jsonc") $Root $HOME
 if ($LASTEXITCODE -ne 0) { throw "OpenCode configuration generation failed." }
 

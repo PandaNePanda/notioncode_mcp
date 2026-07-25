@@ -70,6 +70,69 @@ class ImageInputTests(unittest.TestCase):
 
 
 class CompleteWithImagesTests(unittest.IsolatedAsyncioTestCase):
+    async def test_streams_thinking_but_buffers_final_text(self) -> None:
+        saved = []
+        deltas = []
+        prep = SimpleNamespace(
+            url="https://example.test/inference",
+            body={"transcript": [{"type": "config"}, {"type": "user"}]},
+            headers={},
+            active_thread_id="thinking-thread",
+            notion_model="agave-flan",
+            save_state=lambda: saved.append(True),
+        )
+
+        class Response:
+            status_code = 200
+
+            async def aiter_lines(self):
+                yield json.dumps({
+                    "type": "agent-inference",
+                    "value": [{"type": "thinking", "content": "Inspecting"}],
+                })
+                yield json.dumps({
+                    "type": "agent-inference",
+                    "value": [
+                        {"type": "thinking", "content": "Inspecting file"},
+                    ],
+                })
+                yield json.dumps({
+                    "type": "agent-inference",
+                    "value": [
+                        {"type": "thinking", "content": "Reviewing file"},
+                        {"type": "text", "content": "Done"},
+                    ],
+                    "inputTokens": 8,
+                    "outputTokens": 3,
+                    "model": "agave-flan",
+                })
+
+        @asynccontextmanager
+        async def inference_stream(*_args):
+            yield Response()
+
+        notion = SimpleNamespace(
+            _prepare_call=lambda **_kwargs: prep,
+            _inference_stream=inference_stream,
+            _raise_for_http=AsyncMock(),
+        )
+
+        async def on_thinking(delta: str) -> None:
+            deltas.append(delta)
+
+        response = await complete_with_images(
+            notion,
+            prompt="prompt",
+            images=[],
+            model="opus-5",
+            on_thinking_delta_async=on_thinking,
+        )
+
+        self.assertEqual(deltas, ["Inspecting", " file", "\nReviewing file"])
+        self.assertEqual(response.thinking, "Reviewing file")
+        self.assertEqual(response.text, "Done")
+        self.assertEqual(saved, [True])
+
     async def test_inserts_attachment_before_user_and_saves_state(self) -> None:
         saved: list[bool] = []
         prep = SimpleNamespace(

@@ -1,8 +1,8 @@
 model = "gpt-5.5"
 model_provider = "notion-ai"
 model_reasoning_effort = "high"
-model_context_window = 100000
-model_auto_compact_token_limit = 60000
+model_context_window = 210000
+model_auto_compact_token_limit = 200000
 model_auto_compact_token_limit_scope = "total"
 tool_output_token_limit = 12000
 model_catalog_json = "__NOTIONCODE_ROOT__/config/codex-models.json"

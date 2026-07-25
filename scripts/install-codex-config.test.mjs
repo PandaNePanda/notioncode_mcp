@@ -42,8 +42,8 @@ test("merges the provider without losing unrelated Codex settings", () => {
     ].join("\n"));
     assert.match(output, /model = "gpt-5\.5"/);
     assert.match(output, /model_provider = "notion-ai"/);
-    assert.match(output, /model_context_window = 100000/);
-    assert.match(output, /model_auto_compact_token_limit = 60000/);
+    assert.match(output, /model_context_window = 210000/);
+    assert.match(output, /model_auto_compact_token_limit = 200000/);
     assert.match(output, /model_auto_compact_token_limit_scope = "total"/);
     assert.match(output, /tool_output_token_limit = 12000/);
     assert.match(output, /\[mcp_servers\.notion-private]/);

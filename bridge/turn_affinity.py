@@ -22,6 +22,7 @@ class TurnAffinity:
     input_tokens: int
     output_tokens: int
     updated_at: float
+    model: str | None = None
 
 
 def codex_turn_key(body: dict[str, Any]) -> str | None:
@@ -99,6 +100,7 @@ class TurnAffinityStore:
         completion_text: str,
         input_tokens: int,
         output_tokens: int,
+        model: str,
     ) -> None:
         if key is None:
             return
@@ -112,6 +114,7 @@ class TurnAffinityStore:
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
                 updated_at=time.time(),
+                model=model,
             )
             self._cleanup_locked()
 

@@ -34,6 +34,7 @@ class ConversationSegmentTests(unittest.IsolatedAsyncioTestCase):
                 turns=7,
                 input_tokens=100,
                 output_tokens=20,
+                model="opus-5",
             )
             raw = path.read_text(encoding="utf8")
             self.assertNotIn("secret-codex-thread", raw)
@@ -46,6 +47,33 @@ class ConversationSegmentTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(restored.account_id, "account-a")
             self.assertEqual(restored.segment_index, 2)
             self.assertTrue(restored.awaiting_compacted_history)
+            self.assertEqual(restored.model, "opus-5")
+
+    async def test_legacy_state_without_model_loads_for_safe_rollover(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "conversation-state.json"
+            store = ConversationSegmentStore(path)
+            await store.put(
+                "codex-thread",
+                account_id="account-a",
+                notion_thread_id="notion-thread",
+                input_fingerprints=("hash-a",),
+                segment_index=0,
+                awaiting_compacted_history=False,
+                turns=1,
+                input_tokens=10,
+                output_tokens=2,
+                model="fable-5",
+            )
+            payload = json.loads(path.read_text(encoding="utf8"))
+            for segment in payload["conversations"].values():
+                segment.pop("model")
+            path.write_text(json.dumps(payload), encoding="utf8")
+
+            restored = await ConversationSegmentStore(path).get("codex-thread")
+
+        self.assertIsNotNone(restored)
+        self.assertIsNone(restored.model)
 
 
 if __name__ == "__main__":

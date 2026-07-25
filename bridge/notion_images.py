@@ -8,6 +8,7 @@ import math
 import struct
 import uuid
 from dataclasses import dataclass
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 import httpx
@@ -309,13 +310,14 @@ async def complete_with_images(
     workspace_search: bool = False,
     ask_mode: bool = True,
     thread_id: str | None = None,
+    on_thinking_delta_async: Callable[[str], Awaitable[None]] | None = None,
 ) -> ChatResponse:
-    """Complete a request using Notion's native attachment flow.
+    """Complete a request with native images and optional thinking deltas.
 
-    Text-only callers intentionally continue to use NotionAgentClient.complete;
-    this function is an isolated compatibility layer for Responses input_image.
+    Final text remains buffered so the Responses bridge can classify native
+    tool calls before exposing assistant output.
     """
-    if not images:
+    if not images and on_thinking_delta_async is None:
         return await notion.complete(
             prompt=prompt,
             system=system,
@@ -335,46 +337,56 @@ async def complete_with_images(
         thread_id=thread_id,
         workflow_id=None,
     )
-    attachments = [
-        build_attachment(
-            image,
-            await _upload_image(
-                notion,
+    if images:
+        attachments = [
+            build_attachment(
                 image,
-                thread_id=prep.active_thread_id,
-                create_thread=bool(prep.body.get("createThread", False)),
+                await _upload_image(
+                    notion,
+                    image,
+                    thread_id=prep.active_thread_id,
+                    create_thread=bool(prep.body.get("createThread", False)),
+                ),
+            )
+            for image in images
+        ]
+        transcript = prep.body.get("transcript")
+        if not isinstance(transcript, list):
+            raise RuntimeError("Notion inference request has no transcript")
+        user_index = next(
+            (
+                index
+                for index, item in enumerate(transcript)
+                if isinstance(item, dict) and item.get("type") == "user"
             ),
+            len(transcript),
         )
-        for image in images
-    ]
-    transcript = prep.body.get("transcript")
-    if not isinstance(transcript, list):
-        raise RuntimeError("Notion inference request has no transcript")
-    user_index = next(
-        (
-            index
-            for index, item in enumerate(transcript)
-            if isinstance(item, dict) and item.get("type") == "user"
-        ),
-        len(transcript),
-    )
-    transcript[user_index:user_index] = attachments
+        transcript[user_index:user_index] = attachments
 
-    # The upload POST is complete before inference begins. A short yield also
-    # lets the S3 object become visible to Notion's attachment fetcher without
-    # imposing a noticeable delay on local Codex use.
-    await asyncio.sleep(0.1)
+        # Let the uploaded object become visible to Notion's attachment fetcher.
+        await asyncio.sleep(0.1)
 
     parser = NDJSONStreamParser()
+    previous_thinking = ""
     async with notion._inference_stream(prep.url, prep.body, prep.headers) as response:
         if response.status_code != 200:
             await notion._raise_for_http(response)
         async for line in response.aiter_lines():
             parser.feed_line(line)
+            current_thinking = parser.thinking
+            if on_thinking_delta_async is not None and current_thinking != previous_thinking:
+                if current_thinking.startswith(previous_thinking):
+                    delta = current_thinking[len(previous_thinking):]
+                else:
+                    # Responses SSE is append-only, so preserve replacement snapshots
+                    # as a new line instead of silently losing corrected thinking.
+                    delta = f"\n{current_thinking}"
+                await on_thinking_delta_async(delta)
+            previous_thinking = current_thinking
     result = parser.finalize()
     if not result.text:
         raise NotionAgentError(
-            f"notion returned empty text for an image request "
+            f"notion returned empty text "
             f"(events={result.event_type_counts}, lines={result.line_count})",
             code=ErrorCode.EMPTY_TEXT,
         )

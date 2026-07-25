@@ -38,12 +38,13 @@ class TurnAffinityTests(unittest.IsolatedAsyncioTestCase):
         await store.put(
             "turn", account_id="account", notion_thread_id="thread", input_count=3,
             input_fingerprint="fingerprint", completion_text="done",
-            input_tokens=10, output_tokens=2,
+            input_tokens=10, output_tokens=2, model="opus-5",
         )
         item = await store.get("turn")
         self.assertIsNotNone(item)
         self.assertEqual(item.account_id, "account")
         self.assertEqual(item.notion_thread_id, "thread")
+        self.assertEqual(item.model, "opus-5")
         self.assertEqual(item.input_count, 3)
         self.assertEqual(item.completion_text, "done")
 

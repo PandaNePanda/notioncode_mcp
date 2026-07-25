@@ -6,6 +6,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from notion_agent_cli.exceptions import ErrorCode, NotionAgentError
 
@@ -28,6 +29,28 @@ class FakeClient:
 
 
 class AccountPoolTests(unittest.IsolatedAsyncioTestCase):
+    async def test_times_out_runaway_inference_and_releases_account(self) -> None:
+        pool = NotionAccountPool([FakeClient("one")], account_ids=["one"])
+
+        async def operation(_client: FakeClient) -> str:
+            await asyncio.sleep(1)
+            return "late"
+
+        with patch("account_pool.INFERENCE_TIMEOUT_SECONDS", 0.01):
+            with self.assertLogs("uvicorn.error.notion_pool", level="WARNING") as captured:
+                async with pool.lease() as lease:
+                    with self.assertRaisesRegex(
+                        TimeoutError,
+                        "Notion inference exceeded 0.01 seconds",
+                    ):
+                        await lease.run(operation)
+
+        status = await pool.status()
+        events = [json.loads(record.getMessage()) for record in captured.records]
+        self.assertEqual(events[-1]["event"], "account_request_timed_out")
+        self.assertEqual(status["busy"], 0)
+        self.assertEqual(status["available"], 1)
+
     async def test_emits_structured_account_lifecycle_events(self) -> None:
         pool = NotionAccountPool(
             [FakeClient("one"), FakeClient("two")],
