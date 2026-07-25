@@ -38,6 +38,7 @@ AI-инструменты.
 |---|---|---|---|
 | Fable 5 (Notion), по умолчанию | `fable-5` | `gpt-5.5` | `acai-budino-high` |
 | GPT-5.6 Sol (Notion) | `gpt-5.6-sol` | `gpt-5.6-sol` | `orange-mousse` |
+| Opus 5 (Notion) | `opus-5` | `opus-5` | `agave-flan` |
 
 Codex использует совместимый ID `gpt-5.5` для Fable, а bridge преобразует его
 обратно в `fable-5`. Исходная таблица внутренних aliases находится в
@@ -188,7 +189,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
 2. Завершите установку и авторизацию Notion по инструкции выше.
 3. Выполните VS Code command `Developer: Reload Window`.
 4. Откройте новый Codex-чат.
-5. Выберите `Fable 5 (Notion)` или `GPT-5.6 Sol (Notion)`.
+5. Выберите `Fable 5 (Notion)`, `GPT-5.6 Sol (Notion)` или `Opus 5 (Notion)`.
 
 Дополнительный `chatgpt.cliExecutable` не нужен. Расширение и Codex CLI читают
 один стандартный `~/.codex/config.toml`. Installer обновляет только блоки между
@@ -342,7 +343,7 @@ bridge/server.py     127.0.0.1:8765
                          |
                          | notion-agent-cli + local account JSON
                          v
-Notion AI            fable-5 / gpt-5.6-sol
+Notion AI            fable-5 / gpt-5.6-sol / opus-5
                          |
                          | one-action planner loop
                          v
@@ -439,7 +440,7 @@ sudo -u "$USER" -H "$PWD/.runtime/notion-agent-cli-venv/bin/notion-agent" \
 
 ### Модель отвечает подозрительно быстро или заметно хуже ожидаемого
 
-Fable 5 и GPT-5.6 Sol с высоким reasoning обычно не относятся к мгновенным
+Fable 5, GPT-5.6 Sol и Opus 5 с высоким reasoning обычно не относятся к мгновенным
 моделям. Скорость сама по себе не доказывает ошибку, но если ответы стабильно
 приходят подозрительно быстро и одновременно имеют неожиданно низкое качество,
 высока вероятность, что при установке ИИ-агент неверно настроил внутренние
@@ -451,7 +452,8 @@ Fable 5 и GPT-5.6 Sol с высоким reasoning обычно не относ�
 ```json
 {
   "fable-5": "acai-budino-high",
-  "gpt-5.6-sol": "orange-mousse"
+  "gpt-5.6-sol": "orange-mousse",
+  "opus-5": "agave-flan"
 }
 ```
 

@@ -10,7 +10,7 @@ codex --image before.png,after.png -- "Compare these screenshots"
 
 PNG, JPEG, GIF, and WebP data URLs are accepted by the local Responses bridge.
 Each image is uploaded through Notion's assistant-chat attachment endpoint and
-inserted into the same Fable 5 or GPT-5.6 Sol inference transcript as the user
+inserted into the same Fable 5, GPT-5.6 Sol, or Opus 5 inference transcript as the user
 message. Repeated historical images are deduplicated, and a genuinely new image
 is attached to the existing Notion thread instead of forcing a new dialog.
 

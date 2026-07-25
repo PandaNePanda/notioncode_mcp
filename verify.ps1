@@ -10,6 +10,7 @@ $ModelsPath = Join-Path $AccountHome "models.json"
 $ExpectedAliases = [ordered]@{
     "fable-5" = "acai-budino-high"
     "gpt-5.6-sol" = "orange-mousse"
+    "opus-5" = "agave-flan"
 }
 
 $required = @(
@@ -53,7 +54,7 @@ foreach ($entry in $ExpectedAliases.GetEnumerator()) {
 
 $catalog = Get-Content -LiteralPath (Join-Path $Root "config\codex-models.json") -Raw -Encoding UTF8 | ConvertFrom-Json
 $slugs = @($catalog.models | ForEach-Object { $_.slug })
-if (($slugs -join ",") -ne "gpt-5.5,gpt-5.6-sol") {
+if (($slugs -join ",") -ne "gpt-5.5,gpt-5.6-sol,opus-5") {
     throw "Unexpected Codex model catalog: $($slugs -join ', ')"
 }
 foreach ($model in $catalog.models) {
@@ -70,7 +71,7 @@ if (-not $SkipLiveChecks) {
     if (-not $health.ok) { throw "Bridge health check reports no valid Notion accounts." }
     $remoteModels = Invoke-RestMethod -Uri "http://127.0.0.1:8765/v1/models" -TimeoutSec 10
     $remoteIds = @($remoteModels.data | ForEach-Object { $_.id })
-    if (($remoteIds -join ",") -ne "fable-5,gpt-5.6-sol") {
+    if (($remoteIds -join ",") -ne "fable-5,gpt-5.6-sol,opus-5") {
         throw "Bridge returned unexpected models: $($remoteIds -join ', ')"
     }
 }

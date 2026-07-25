@@ -54,13 +54,18 @@ from turn_affinity import (
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 ACCOUNT_HOME = Path(os.getenv("NOTION_AGENT_HOME", str(Path.home() / ".notionagents"))).expanduser()
 MODEL_ID = "fable-5"
-SUPPORTED_MODELS = ("fable-5", "gpt-5.6-sol")
+SUPPORTED_MODELS = ("fable-5", "gpt-5.6-sol", "opus-5")
+MODEL_DISPLAY_NAMES = {
+    "fable-5": "Fable 5 (Notion)",
+    "gpt-5.6-sol": "GPT-5.6 Sol (Notion)",
+    "opus-5": "Opus 5 (Notion)",
+}
 CODEX_FABLE_MODEL_ID = "gpt-5.5"
 WORKFLOW_ID = os.getenv("NOTION_WORKFLOW_ID", "")
 RUNTIME_ENV = Path(os.getenv("NOTION_RUNTIME_ENV", str(PROJECT_ROOT / "runtime" / ".env"))).expanduser()
 CODE_ROOT = Path(os.getenv("CODE_ROOT", str(Path.home()))).expanduser().resolve()
 
-app = FastAPI(title="Notion Fable 5 bridge")
+app = FastAPI(title="Notion AI bridge")
 account_pool: NotionAccountPool | None = None
 turn_affinities = TurnAffinityStore()
 conversation_segments = ConversationSegmentStore(ACCOUNT_HOME / "conversation-state.json")
@@ -447,7 +452,7 @@ def resolve_model(model: str | None) -> str:
     if requested in SUPPORTED_MODELS:
         return requested
     if requested in {"opus", "best"} or "opus" in requested:
-        return "gpt-5.6-sol"
+        return "opus-5"
     if requested in {"sonnet", "haiku", "fable", "default"}:
         return "fable-5"
     if "sonnet" in requested or "haiku" in requested or "fable" in requested:
@@ -1208,7 +1213,7 @@ async def models() -> dict[str, Any]:
                 "id": model_id,
                 "object": "model",
                 "type": "model",
-                "display_name": "Fable 5 (Notion)" if model_id == "fable-5" else "GPT-5.6 Sol (Notion)",
+                "display_name": MODEL_DISPLAY_NAMES[model_id],
                 "created": int(time.time()),
                 "created_at": "2026-01-01T00:00:00Z",
                 "owned_by": "notion",

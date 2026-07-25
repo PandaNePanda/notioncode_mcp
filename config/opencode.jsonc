@@ -23,6 +23,13 @@
             "context": 100000,
             "output": 40000
           }
+        },
+        "opus-5": {
+          "name": "Opus 5 (Notion)",
+          "limit": {
+            "context": 100000,
+            "output": 40000
+          }
         }
       }
     }

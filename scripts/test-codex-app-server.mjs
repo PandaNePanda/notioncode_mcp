@@ -228,6 +228,7 @@ try {
   const expectedCatalogModels = [
     { model: "gpt-5.5", displayName: "Fable 5 (Notion)" },
     { model: "gpt-5.6-sol", displayName: "GPT-5.6 Sol (Notion)" },
+    { model: "opus-5", displayName: "Opus 5 (Notion)" },
   ];
   if (JSON.stringify(catalogModels) !== JSON.stringify(expectedCatalogModels)) {
     throw new Error(`Unexpected Codex model catalog: ${JSON.stringify(catalogModels)}`);
@@ -285,14 +286,20 @@ try {
       input: [{ type: "text", text: "Use GPT-5.6 Sol for this turn." }],
     });
     await waitFor("turn/completed", 2);
+    await send("thread/settings/update", { threadId, model: "opus-5" });
+    await send("turn/start", {
+      threadId,
+      input: [{ type: "text", text: "Use Opus 5 for this turn." }],
+    });
+    await waitFor("turn/completed", 3);
     await send("thread/settings/update", { threadId, model: "gpt-5.5" });
     await send("turn/start", {
       threadId,
       input: [{ type: "text", text: "Switch back to Fable 5 for this turn." }],
     });
-    await waitFor("turn/completed", 3);
+    await waitFor("turn/completed", 4);
     const modelSequence = requests.map(({ model }) => model);
-    const expectedSequence = ["gpt-5.5", "gpt-5.6-sol", "gpt-5.5"];
+    const expectedSequence = ["gpt-5.5", "gpt-5.6-sol", "opus-5", "gpt-5.5"];
     if (JSON.stringify(modelSequence) !== JSON.stringify(expectedSequence)) {
       throw new Error(
         `Model switch regression: expected ${expectedSequence.join(" -> ")}, got ${modelSequence.join(" -> ")}`,

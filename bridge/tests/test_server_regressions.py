@@ -26,6 +26,12 @@ class ResponsesTextRegressionTests(unittest.TestCase):
         self.assertEqual(resolve_model("gpt-5.5"), "fable-5")
         self.assertEqual(resolve_model("fable-5"), "fable-5")
 
+    def test_opus_aliases_resolve_to_notion_opus_5(self) -> None:
+        self.assertEqual(resolve_model("opus-5"), "opus-5")
+        self.assertEqual(resolve_model("opus"), "opus-5")
+        self.assertEqual(resolve_model("claude-opus-5"), "opus-5")
+        self.assertEqual(resolve_model("best"), "opus-5")
+
     def test_input_image_does_not_replace_or_mutate_text(self) -> None:
         message = {
             "type": "message",
