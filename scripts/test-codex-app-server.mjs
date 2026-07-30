@@ -180,7 +180,16 @@ const server = http.createServer((request, response) => {
 await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
 const port = server.address().port;
 const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "notioncode-codex-"));
-const catalog = path.join(root, "config", "codex-models.json").replaceAll("\\", "/");
+const baseCatalog = JSON.parse(fs.readFileSync(path.join(root, "config", "codex-models.json"), "utf8"));
+const futureModel = structuredClone(baseCatalog.models.find((item) => item.slug === "gpt-5.6-sol"));
+futureModel.slug = "gpt-5.6-sol-ultrafast";
+futureModel.model = "gpt-5.6-sol-ultrafast";
+futureModel.display_name = "GPT-5.6 Sol Ultrafast (Notion)";
+futureModel.displayName = "GPT-5.6 Sol Ultrafast (Notion)";
+futureModel.priority = 4;
+baseCatalog.models.push(futureModel);
+const catalog = path.join(tempHome, "codex-models.json").replaceAll("\\", "/");
+fs.writeFileSync(catalog, JSON.stringify(baseCatalog, null, 2));
 fs.writeFileSync(path.join(tempHome, "config.toml"), [
   'model = "gpt-5.5"',
   'model_provider = "notion-ai"',
@@ -264,14 +273,16 @@ try {
     { model: "gpt-5.5", displayName: "Fable 5 (Notion)" },
     { model: "gpt-5.6-sol", displayName: "GPT-5.6 Sol (Notion)" },
     { model: "opus-5", displayName: "Opus 5 (Notion)" },
+    { model: "gpt-5.6-sol-ultrafast", displayName: "GPT-5.6 Sol Ultrafast (Notion)" },
   ];
   if (JSON.stringify(catalogModels) !== JSON.stringify(expectedCatalogModels)) {
     throw new Error(`Unexpected Codex model catalog: ${JSON.stringify(catalogModels)}`);
   }
   const started = await send("thread/start", {
     cwd: process.env.CODEX_TEST_CUSTOM_LOOP === "1" ? tempHome : root,
-    model: "gpt-5.5",
+    model: "gpt-5.6-sol",
     modelProvider: "notion-ai",
+    serviceTier: "priority",
     approvalPolicy: "never",
     sandbox: process.env.CODEX_TEST_CUSTOM_LOOP === "1" ? "workspace-write" : "read-only",
     ephemeral: true,
@@ -279,14 +290,25 @@ try {
   const threadId = started.thread.id;
   await send("turn/start", {
     threadId,
+    effort: "ultra",
     input: [{ type: "text", text: "Reply with the contract marker only." }],
   });
   const completed = await waitFor("turn/completed");
   await waitFor("item/reasoning/summaryTextDelta");
   if (!requests.length) throw new Error("Codex did not call /v1/responses");
   const request = requests[0];
-  if (request.model !== "gpt-5.5" || request.stream !== true) {
+  if (request.model !== "gpt-5.6-sol" || request.stream !== true) {
     throw new Error(`Unexpected Responses request: ${JSON.stringify(request)}`);
+  }
+  // Current Codex Desktop/CLI normalizes the UI's Ultra choice to the
+  // provider-supported "max" wire value. Keep accepting literal "ultra"
+  // for future clients, while still proving that reasoning and Fast remain
+  // independent request settings.
+  if (!["ultra", "max"].includes(request.reasoning?.effort)) {
+    throw new Error(`Codex sent an unsupported reasoning effort: ${JSON.stringify(request.reasoning)}`);
+  }
+  if (request.service_tier !== "priority") {
+    throw new Error(`Codex did not transmit the priority service tier: ${JSON.stringify(request.service_tier)}`);
   }
   if (!Array.isArray(request.input) || !Array.isArray(request.tools)) {
     throw new Error("Codex request is missing input or native tool definitions");
@@ -335,7 +357,7 @@ try {
     });
     await waitFor("turn/completed", 4);
     const modelSequence = requests.map(({ model }) => model);
-    const expectedSequence = ["gpt-5.5", "gpt-5.6-sol", "opus-5", "gpt-5.5"];
+    const expectedSequence = ["gpt-5.6-sol", "gpt-5.6-sol", "opus-5", "gpt-5.5"];
     if (JSON.stringify(modelSequence) !== JSON.stringify(expectedSequence)) {
       throw new Error(
         `Model switch regression: expected ${expectedSequence.join(" -> ")}, got ${modelSequence.join(" -> ")}`,
@@ -355,13 +377,42 @@ try {
     request: {
       model: request.model,
       stream: request.stream,
+      requested_reasoning_mode: "ultra",
+      provider_reasoning_effort: request.reasoning?.effort ?? null,
+      service_tier: request.service_tier ?? null,
       input_items: request.input.length,
       tools: request.tools.map((tool) => `${tool.type}:${tool.name || ""}`),
       fields: Object.keys(request).sort(),
     },
   }, null, 2));
 } finally {
-  child.kill("SIGTERM");
-  server.close();
-  fs.rmSync(tempHome, { recursive: true, force: true });
+  const waitForChildExit = () => new Promise((resolve) => child.once("exit", resolve));
+  if (child.exitCode === null) {
+    const exited = waitForChildExit();
+    child.kill("SIGTERM");
+    await Promise.race([
+      exited,
+      new Promise((resolve) => setTimeout(resolve, 5_000)),
+    ]);
+  }
+  if (child.exitCode === null) {
+    const exited = waitForChildExit();
+    child.kill("SIGKILL");
+    await Promise.race([
+      exited,
+      new Promise((resolve) => setTimeout(resolve, 5_000)),
+    ]);
+  }
+  const serverClosed = new Promise((resolve) => server.close(resolve));
+  server.closeAllConnections?.();
+  await Promise.race([
+    serverClosed,
+    new Promise((resolve) => setTimeout(resolve, 5_000)),
+  ]);
+  fs.rmSync(tempHome, {
+    recursive: true,
+    force: true,
+    maxRetries: 10,
+    retryDelay: 100,
+  });
 }

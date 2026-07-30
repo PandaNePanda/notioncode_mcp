@@ -19,9 +19,11 @@ from notion_agent_cli.provider import NotionAgentClient
 
 from account_pool import (
     MAX_REASONING_EFFORT,
+    SUPPORTED_REASONING_EFFORTS,
     AccountLease,
     AccountPoolCoolingDown,
     AccountPoolExhausted,
+    ModelIntegrityError,
     NotionAccountPool,
     build_account_pool,
 )
@@ -43,6 +45,7 @@ from notion_images import (
     estimated_image_tokens,
     extract_response_images,
 )
+from model_catalog import BASE_DISPLAY_NAMES, BASE_MODEL_IDS, VerifiedModelCatalog
 from turn_affinity import (
     TurnAffinityStore,
     codex_conversation_key,
@@ -56,15 +59,27 @@ from turn_affinity import (
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 ACCOUNT_HOME = Path(os.getenv("NOTION_AGENT_HOME", str(Path.home() / ".notionagents"))).expanduser()
 MODEL_ID = "opus-5"
-SUPPORTED_MODELS = ("fable-5", "gpt-5.6-sol", "opus-5")
-MODEL_DISPLAY_NAMES = {
-    "fable-5": "Fable 5 (Notion)",
-    "gpt-5.6-sol": "GPT-5.6 Sol (Notion)",
-    "opus-5": "Opus 5 (Notion)",
-}
+SUPPORTED_MODELS = BASE_MODEL_IDS
+MODEL_DISPLAY_NAMES = BASE_DISPLAY_NAMES
 CODEX_FABLE_MODEL_ID = "gpt-5.5"
 FORCED_MODEL_ID = os.getenv("NOTION_FORCE_MODEL", "").strip().lower()
 REASONING_HEARTBEAT_SECONDS = 10
+MODEL_REFRESH_SECONDS = max(
+    30.0,
+    float(os.getenv("NOTION_MODEL_REFRESH_SECONDS", "60")),
+)
+# The Notion provider retains the full server-side thread even when the bridge
+# sends only incremental events.  Roll over before that retained context grows
+# near Codex's 210k-token window.  The fresh segment receives a bounded recent
+# transcript; normal Codex compaction summaries remain preferred when present.
+SEGMENT_ROLLOVER_INPUT_TOKENS = max(
+    12_000,
+    int(os.getenv("NOTION_SEGMENT_ROLLOVER_INPUT_TOKENS", "120000")),
+)
+SEGMENT_ROLLOVER_PROMPT_CHARS = max(
+    4_000,
+    int(os.getenv("NOTION_SEGMENT_ROLLOVER_PROMPT_CHARS", "48000")),
+)
 WORKFLOW_ID = os.getenv("NOTION_WORKFLOW_ID", "")
 RUNTIME_ENV = Path(os.getenv("NOTION_RUNTIME_ENV", str(PROJECT_ROOT / "runtime" / ".env"))).expanduser()
 CODE_ROOT = Path(os.getenv("CODE_ROOT", str(Path.home()))).expanduser().resolve()
@@ -86,6 +101,100 @@ account_pool: NotionAccountPool | None = None
 turn_affinities = TurnAffinityStore()
 conversation_segments = ConversationSegmentStore(ACCOUNT_HOME / "conversation-state.json")
 log = logging.getLogger("uvicorn.error.notion_bridge")
+model_catalog = VerifiedModelCatalog(
+    ACCOUNT_HOME,
+    PROJECT_ROOT / "config" / "codex-models.json",
+    base_alias_path=PROJECT_ROOT / "state-template" / ".notionagents" / "models.json",
+)
+model_refresh_task: asyncio.Task[None] | None = None
+
+def validate_selected_model(
+    result: Any,
+    *,
+    requested_model: str,
+    resolved_model: str,
+    reused_thread: bool,
+) -> Any:
+    """Reject provider-side model substitution before the lease records success."""
+    raw = getattr(result, "raw", None)
+    reported = raw.get("reported_notion_model") if isinstance(raw, dict) else None
+    actual = getattr(result, "model", None) or reported
+    actual = actual if isinstance(actual, str) and actual else None
+    expected = model_catalog.notion_model_for(resolved_model)
+    log_event(
+        log,
+        "notion_model_selected",
+        resolved_model=resolved_model,
+        notion_model=getattr(result, "model", None),
+        reported_notion_model=reported,
+    )
+    if isinstance(expected, str) and expected and actual and actual != expected:
+        log_event(
+            log,
+            "notion_model_mismatch",
+            level=logging.ERROR,
+            requested_model=requested_model,
+            resolved_model=resolved_model,
+            expected_notion_model=expected,
+            actual_notion_model=actual,
+            reused_thread=reused_thread,
+            notion_thread_id=(
+                correlation_id(result.thread_id)
+                if getattr(result, "thread_id", None)
+                else None
+            ),
+        )
+        raise ModelIntegrityError(
+            f'Explicit model "{resolved_model}" resolved to unexpected Notion model '
+            f'"{actual}" (expected "{expected}")',
+            requested_model=resolved_model,
+        )
+    return result
+
+
+async def complete_selected_model(
+    notion: NotionAgentClient,
+    *,
+    requested_model: str,
+    resolved_model: str,
+    **kwargs: Any,
+) -> Any:
+    """Run one provider completion and reject silent model substitution."""
+    result = await notion.complete(**kwargs)
+    return validate_selected_model(
+        result,
+        requested_model=requested_model,
+        resolved_model=resolved_model,
+        reused_thread=bool(kwargs.get("thread_id")),
+    )
+
+async def refresh_model_catalog_forever() -> None:
+    while True:
+        refresh_started_at = time.monotonic()
+        try:
+            clients = await account_pool.eligible_clients() if account_pool is not None else ()
+            refreshed = await model_catalog.refresh(clients)
+            status = model_catalog.status()
+            log_event(
+                log,
+                "model_catalog_refreshed" if refreshed else "model_catalog_refresh_degraded",
+                level=logging.INFO if refreshed else logging.WARNING,
+                state=status["state"],
+                verified_accounts=status["verified_accounts"],
+                dynamic_models=status["dynamic_models"],
+                duration_ms=round((time.monotonic() - refresh_started_at) * 1000),
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            log_event(
+                log,
+                "model_catalog_refresh_failed",
+                level=logging.WARNING,
+                error_type=type(error).__name__,
+                duration_ms=round((time.monotonic() - refresh_started_at) * 1000),
+            )
+        await asyncio.sleep(MODEL_REFRESH_SECONDS)
 
 
 @app.middleware("http")
@@ -304,16 +413,20 @@ async def complete_agent(
     system: str | None = None,
     planner_mode: bool = False,
     model_id: str = MODEL_ID,
+    reasoning_effort: str = MAX_REASONING_EFFORT,
+    service_tier: str | None = None,
 ):
     if planner_mode and not WORKFLOW_ID:
         first_prompt = planner_prompt(prompt, system)
         response = await lease.run(
-            lambda notion: notion.complete(
+            lambda notion: complete_selected_model(notion, requested_model=model_id, resolved_model=model_id,
                 prompt=first_prompt,
                 model=model_id,
                 web_search=False,
                 workspace_search=False,
                 ask_mode=True,
+                reasoning_effort=reasoning_effort,
+                service_tier=service_tier,
             )
         )
         completed_actions: list[str] = []
@@ -349,25 +462,29 @@ async def complete_agent(
             )
             thread_id = response.thread_id
             response = await lease.run(
-                lambda notion: notion.complete(
+                lambda notion: complete_selected_model(notion, requested_model=model_id, resolved_model=model_id,
                     prompt=continuation_prompt,
                     model=model_id,
                     web_search=False,
                     workspace_search=False,
                     ask_mode=True,
                     thread_id=thread_id,
+                    reasoning_effort=reasoning_effort,
+                    service_tier=service_tier,
                 ),
-                retry_operation=lambda notion: notion.complete(
+                retry_operation=lambda notion: complete_selected_model(notion, requested_model=model_id, resolved_model=model_id,
                     prompt=planner_prompt(recovery_task, system),
                     model=model_id,
                     web_search=False,
                     workspace_search=False,
                     ask_mode=True,
+                    reasoning_effort=reasoning_effort,
+                    service_tier=service_tier,
                 ),
             )
         raise RuntimeError("The planner exceeded the maximum action-loop depth")
     response = await lease.run(
-        lambda notion: notion.complete(
+        lambda notion: complete_selected_model(notion, requested_model=model_id, resolved_model=model_id,
             prompt=prompt,
             system=system,
             model=model_id,
@@ -375,6 +492,8 @@ async def complete_agent(
             workspace_search=True,
             ask_mode=not bool(WORKFLOW_ID),
             workflow_id=WORKFLOW_ID or None,
+            reasoning_effort=reasoning_effort,
+            service_tier=service_tier,
         )
     )
     if not WORKFLOW_ID:
@@ -403,14 +522,16 @@ async def complete_agent(
         )
         thread_id = response.thread_id
         response = await lease.run(
-            lambda notion: notion.complete(
+            lambda notion: complete_selected_model(notion, requested_model=model_id, resolved_model=model_id,
                 prompt=continuation_prompt,
                 model=model_id,
                 ask_mode=False,
                 workflow_id=WORKFLOW_ID,
                 thread_id=thread_id,
+                reasoning_effort=reasoning_effort,
+                service_tier=service_tier,
             ),
-            retry_operation=lambda notion: notion.complete(
+            retry_operation=lambda notion: complete_selected_model(notion, requested_model=model_id, resolved_model=model_id,
                 prompt=recovery_prompt,
                 system=system,
                 model=model_id,
@@ -418,6 +539,8 @@ async def complete_agent(
                 workspace_search=True,
                 ask_mode=False,
                 workflow_id=WORKFLOW_ID,
+                reasoning_effort=reasoning_effort,
+                service_tier=service_tier,
             ),
         )
     raise RuntimeError("The agent exceeded the maximum tool-call loop depth")
@@ -425,8 +548,9 @@ async def complete_agent(
 
 @app.on_event("startup")
 async def startup() -> None:
-    global account_pool
+    global account_pool, model_refresh_task
     account_pool = build_account_pool(ACCOUNT_HOME)
+    restored = await account_pool.revalidate_stale_disabled_accounts()
     status = await account_pool.status()
     log_event(
         log,
@@ -436,11 +560,21 @@ async def startup() -> None:
         invalid=status["invalid"],
         duplicates=status["duplicates"],
         maximum=status["maximum"],
+        restored_stale_accounts=restored,
     )
+    model_refresh_task = asyncio.create_task(refresh_model_catalog_forever())
 
 
 @app.on_event("shutdown")
 async def shutdown() -> None:
+    global model_refresh_task
+    if model_refresh_task is not None:
+        model_refresh_task.cancel()
+        try:
+            await model_refresh_task
+        except asyncio.CancelledError:
+            pass
+        model_refresh_task = None
     if account_pool is not None:
         await account_pool.aclose()
 
@@ -461,15 +595,43 @@ def text_content(value: Any) -> str:
     return str(value or "")
 
 
+def request_reasoning_effort(body: dict[str, Any]) -> str:
+    reasoning = body.get("reasoning")
+    candidate = reasoning.get("effort") if isinstance(reasoning, dict) else None
+    if candidate is None:
+        candidate = body.get("reasoning_effort", body.get("effort"))
+    if isinstance(candidate, str) and candidate.strip():
+        normalized = candidate.strip().lower()
+        if normalized not in SUPPORTED_REASONING_EFFORTS:
+            raise ValueError(f"unsupported reasoning effort: {candidate}")
+        return normalized
+    return MAX_REASONING_EFFORT
+
+
+def request_service_tier(body: dict[str, Any]) -> str | None:
+    candidate = body.get("service_tier", body.get("serviceTier"))
+    if isinstance(candidate, str) and candidate.strip():
+        normalized = candidate.strip().lower()
+        if normalized in {"default", "standard"}:
+            return None
+        if normalized == "fast":
+            return "priority"
+        if normalized in {"priority", "ultrafast"}:
+            return normalized
+        raise ValueError(f"unsupported service tier: {candidate}")
+    return None
+
+
 def resolve_model(model: str | None) -> str:
     requested = (model or MODEL_ID).lower()
+    supported_models = model_catalog.model_ids()
     if FORCED_MODEL_ID:
-        if FORCED_MODEL_ID not in SUPPORTED_MODELS:
+        if FORCED_MODEL_ID not in supported_models:
             raise ValueError(f"unsupported forced model: {FORCED_MODEL_ID}")
         return FORCED_MODEL_ID
     if requested == CODEX_FABLE_MODEL_ID:
         return "fable-5"
-    if requested in SUPPORTED_MODELS:
+    if requested in supported_models:
         return requested
     if requested in {"opus", "best"} or "opus" in requested:
         return "opus-5"
@@ -478,6 +640,21 @@ def resolve_model(model: str | None) -> str:
     if "sonnet" in requested or "haiku" in requested or "fable" in requested:
         return "fable-5"
     raise ValueError(f"unsupported model: {model}")
+
+
+def resolve_requested_model(model: str | None, service_tier: str | None) -> str:
+    resolved = resolve_model(model)
+    if service_tier == "ultrafast" and not model_catalog.supports_service_tier(
+        resolved, service_tier
+    ):
+        raise ValueError(
+            "ultrafast is not currently advertised for the selected model; "
+            "it will be enabled automatically after live model metadata exposes it"
+        )
+    tier_variant = model_catalog.tier_model_for(resolved, service_tier)
+    if tier_variant:
+        return tier_variant
+    return resolved
 
 
 def anthropic_system_text(value: Any) -> str:
@@ -705,6 +882,45 @@ Operator context:
 
 Conversation:
 {conversation}"""
+
+
+def responses_rollover_prompt(body: dict[str, Any]) -> str:
+    """Build a bounded fresh-segment prompt without replaying old tool logs.
+
+    The retained Notion thread is intentionally abandoned at the segment
+    threshold.  Keep the newest events (including a Codex compaction summary
+    when one is present), while bounding any individual oversized event too.
+    """
+    request_input = body.get("input", [])
+    if isinstance(request_input, str):
+        request_input = [{"type": "message", "role": "user", "content": request_input}]
+    if not isinstance(request_input, list):
+        request_input = []
+    remaining = SEGMENT_ROLLOVER_PROMPT_CHARS
+    selected: list[dict[str, Any]] = []
+    for item in reversed(request_input):
+        if not isinstance(item, dict):
+            continue
+        rendered = responses_message_text(item)
+        if not rendered:
+            continue
+        if len(rendered) > remaining:
+            if not selected:
+                selected.append({"type": "message", "role": "user", "content": rendered[-remaining:]})
+            break
+        selected.append(item)
+        remaining -= len(rendered)
+        if remaining <= 0:
+            break
+    selected.reverse()
+    bounded_body = {**body, "input": selected}
+    return (
+        "This is a fresh provider conversation segment. Earlier provider-side "
+        "history was deliberately rolled over to keep latency and context bounded. "
+        "Use the retained recent events below; if a compaction checkpoint is present, "
+        "treat it as the authoritative handoff. Do not claim access to omitted history.\n\n"
+        + responses_planner_prompt(bounded_body)
+    )
 
 
 def responses_incremental_body(
@@ -1469,7 +1685,8 @@ async def healthz() -> dict[str, Any]:
     return {
         "ok": pool_status["configured"] > 0,
         "model": MODEL_ID,
-        "models": list(SUPPORTED_MODELS),
+        "models": list(model_catalog.model_ids()),
+        "model_refresh": model_catalog.status(),
         "reasoning_effort": MAX_REASONING_EFFORT,
         "account_pool": pool_status,
         "turn_affinity": await turn_affinities.status(),
@@ -1481,23 +1698,44 @@ async def healthz() -> dict[str, Any]:
 
 @app.get("/v1/models")
 async def models() -> dict[str, Any]:
+    supported_models = set(model_catalog.model_ids())
+    now = int(time.time())
+    data: list[dict[str, Any]] = []
+    for item in model_catalog.model_entries():
+        model_id = item.get("model") or item.get("id") or item.get("slug")
+        if not isinstance(model_id, str) or model_id not in supported_models:
+            continue
+        entry = dict(item)
+        display_name = entry.get("displayName") or entry.get("display_name") or model_catalog.display_name(model_id)
+        entry["id"] = model_id
+        entry.setdefault("object", "model")
+        entry.setdefault("type", "model")
+        entry["display_name"] = str(display_name)
+        entry["displayName"] = str(display_name)
+        entry.setdefault("created", now)
+        entry.setdefault("created_at", "2026-01-01T00:00:00Z")
+        entry.setdefault("owned_by", "notion")
+        data.append(entry)
+    if not data:
+        for model_id in model_catalog.model_ids():
+            data.append(
+                {
+                    "id": model_id,
+                    "object": "model",
+                    "type": "model",
+                    "display_name": model_catalog.display_name(model_id),
+                    "displayName": model_catalog.display_name(model_id),
+                    "created": now,
+                    "created_at": "2026-01-01T00:00:00Z",
+                    "owned_by": "notion",
+                }
+            )
     return {
         "object": "list",
-        "data": [
-            {
-                "id": model_id,
-                "object": "model",
-                "type": "model",
-                "display_name": MODEL_DISPLAY_NAMES[model_id],
-                "created": int(time.time()),
-                "created_at": "2026-01-01T00:00:00Z",
-                "owned_by": "notion",
-            }
-            for model_id in SUPPORTED_MODELS
-        ],
+        "data": data,
         "has_more": False,
-        "first_id": SUPPORTED_MODELS[0],
-        "last_id": SUPPORTED_MODELS[-1],
+        "first_id": data[0]["id"],
+        "last_id": data[-1]["id"],
     }
 
 
@@ -1550,12 +1788,15 @@ async def handle_openai_responses(
     on_thinking_delta_async: Callable[[str], Awaitable[None]] | None = None,
     response_id: str | None = None,
 ):
+    bridge_started_at = time.monotonic()
     conversation_key = conversation_key or codex_conversation_key(body)
     request_kind = request_kind or codex_request_kind(body)
     is_compaction = request_kind == "compaction"
     requested_model = str(body.get("model") or MODEL_ID).lower()
     try:
-        model = resolve_model(requested_model)
+        service_tier = request_service_tier(body)
+        model = resolve_requested_model(requested_model, service_tier)
+        reasoning_effort = request_reasoning_effort(body)
     except ValueError as exc:
         return JSONResponse({"error": {"message": str(exc), "type": "invalid_request_error"}}, status_code=400)
     log_event(
@@ -1567,6 +1808,12 @@ async def handle_openai_responses(
     )
     if account_pool is None or account_pool.size == 0:
         return JSONResponse({"error": {"message": "No valid Notion accounts are configured", "type": "api_error"}}, status_code=503)
+    log_event(
+        log,
+        "request_execution_settings",
+        reasoning_effort=reasoning_effort,
+        service_tier=service_tier,
+    )
     raw_tools = body.get("tools") or []
     tools = [] if is_compaction else responses_tool_catalog(raw_tools)
     web_search_requested = any(
@@ -1603,12 +1850,20 @@ async def handle_openai_responses(
         rollover_reason = "model_changed"
     elif segment is not None and segment_prefix is None:
         rollover_reason = "history_rewritten"
+    elif (
+        segment is not None
+        and not is_compaction
+        and segment.input_tokens >= SEGMENT_ROLLOVER_INPUT_TOKENS
+    ):
+        rollover_reason = "provider_context_limit"
     log_event(
         log,
         "conversation_segment_checked",
         state="new" if segment is None else "rollover" if rollover_reason else "continued",
         segment_index=segment.segment_index if segment is not None else 0,
         rollover_reason=rollover_reason,
+        retained_input_tokens=segment.input_tokens if segment is not None else 0,
+        rollover_input_token_limit=SEGMENT_ROLLOVER_INPUT_TOKENS,
         preferred_account_id=(
             segment.account_id if segment is not None and rollover_reason is None else None
         ),
@@ -1658,6 +1913,8 @@ async def handle_openai_responses(
         responses_compaction_prompt(body, continuing=False)
         if is_compaction else responses_planner_prompt(body)
     )
+    if rollover_reason == "provider_context_limit":
+        full_prompt = responses_rollover_prompt(body)
     incremental_prompt = None
     if anchor is not None:
         if is_compaction:
@@ -1686,12 +1943,21 @@ async def handle_openai_responses(
     log_event(
         log,
         "responses_context",
-        mode="continuation" if incremental_prompt is not None else "full",
+        mode=(
+            "continuation" if incremental_prompt is not None else
+            "bounded_rollover" if rollover_reason == "provider_context_limit" else
+            "full"
+        ),
         input_items=response_input_count(body),
         delta_items=(response_input_count(incremental_body) if incremental_body else 0),
         image_count=len(active_images),
         image_bytes=sum(len(image.data) for image in active_images),
         estimated_prompt_tokens=max(1, len(active_prompt) // 4) + estimated_image_tokens(active_images),
+        rollover_prompt_char_limit=(
+            SEGMENT_ROLLOVER_PROMPT_CHARS
+            if rollover_reason == "provider_context_limit" else None
+        ),
+        bridge_context_prepare_ms=round((time.monotonic() - bridge_started_at) * 1000),
     )
 
     async def initial_completion(notion: NotionAgentClient):
@@ -1708,6 +1974,8 @@ async def handle_openai_responses(
                 workspace_search=False,
                 ask_mode=True,
                 on_thinking_delta_async=on_thinking_delta_async,
+                reasoning_effort=reasoning_effort,
+                service_tier=service_tier,
             )
         return await notion.complete(
             prompt=full_prompt,
@@ -1715,6 +1983,8 @@ async def handle_openai_responses(
             web_search=web_search_requested,
             workspace_search=False,
             ask_mode=True,
+            reasoning_effort=reasoning_effort,
+            service_tier=service_tier,
         )
 
     async def continuation_completion(notion: NotionAgentClient):
@@ -1731,6 +2001,8 @@ async def handle_openai_responses(
                 ask_mode=True,
                 thread_id=anchor.notion_thread_id,
                 on_thinking_delta_async=on_thinking_delta_async,
+                reasoning_effort=reasoning_effort,
+                service_tier=service_tier,
             )
         return await notion.complete(
             prompt=incremental_prompt,
@@ -1739,38 +2011,77 @@ async def handle_openai_responses(
             workspace_search=False,
             ask_mode=True,
             thread_id=anchor.notion_thread_id,
+            reasoning_effort=reasoning_effort,
+            service_tier=service_tier,
         )
 
+    async def checked_initial_completion(notion: NotionAgentClient):
+        return validate_selected_model(
+            await initial_completion(notion),
+            requested_model=requested_model,
+            resolved_model=model,
+            reused_thread=False,
+        )
+
+    async def checked_continuation_completion(notion: NotionAgentClient):
+        return validate_selected_model(
+            await continuation_completion(notion),
+            requested_model=requested_model,
+            resolved_model=model,
+            reused_thread=True,
+        )
+    lease_options: dict[str, str] = {
+        "service_tier": service_tier,
+        "reasoning_effort": reasoning_effort,
+        "required_model": model,
+    }
+    if anchor is not None and (affinity_matches_model or is_compaction):
+        # Tool-loop calls inside one Codex turn and compaction must stay on the
+        # same Notion thread. Rotating here would break an in-flight tool loop.
+        lease_options["preferred_account_id"] = anchor.account_id
+    # New user turns deliberately have no account preference. The pool can
+    # therefore choose the lowest-latency healthy account instead of forcing a
+    # round-robin hop to a slower account. Same-turn tool calls and compaction
+    # remain pinned above, while ordinary failures still fail over immediately.
     try:
-        async with account_pool.lease(
-            preferred_account_id=(anchor.account_id if anchor is not None else None),
-        ) as lease:
+        inference_started_at = time.monotonic()
+        async with account_pool.lease(**lease_options) as lease:
             can_continue = (
                 anchor is not None
                 and incremental_prompt is not None
                 and lease.account_id == anchor.account_id
             )
             completion = await lease.run(
-                continuation_completion if can_continue else initial_completion,
-                retry_operation=initial_completion,
+                checked_continuation_completion if can_continue else checked_initial_completion,
+                retry_operation=checked_initial_completion,
             )
             log_event(
                 log,
-                "notion_model_selected",
-                resolved_model=model,
-                notion_model=getattr(completion, "model", None),
-                reported_notion_model=(
-                    completion.raw.get("reported_notion_model")
-                    if isinstance(getattr(completion, "raw", None), dict)
-                    else None
-                ),
+                "notion_inference_completed",
+                account_id=lease.account_id,
+                duration_ms=round((time.monotonic() - inference_started_at) * 1000),
+                retries_bounded=True,
             )
             for correction_attempt in range(3):
                 valid_call = extract_responses_tool_call(completion.text, tools)
                 malformed_tool = extract_malformed_responses_tool(completion.text, tools)
                 unavailable_tool = extract_unavailable_responses_tool(completion.text, tools)
-                needs_correction = (
+                # Speed optimization: avoid extra correction round-trips for vague refusals,
+                # but keep the correction loop for the specific case we care about:
+                # when tools are available and the model incorrectly claims it cannot use them.
+                refusal_about_tools = (
                     looks_like_agent_refusal(completion.text)
+                    and isinstance(tools, list)
+                    and len(tools) > 0
+                    and (
+                        "don't have access" in completion.text.lower()
+                        or "do not have access" in completion.text.lower()
+                        or "can't access" in completion.text.lower()
+                        or "cannot access" in completion.text.lower()
+                    )
+                )
+                needs_correction = (
+                    refusal_about_tools
                     or malformed_tool is not None
                     or unavailable_tool is not None
                 )
@@ -1815,6 +2126,8 @@ async def handle_openai_responses(
                         ask_mode=True,
                         thread_id=thread_id,
                         on_thinking_delta_async=on_thinking_delta_async,
+                reasoning_effort=reasoning_effort,
+                service_tier=service_tier,
                     ),
                     retry_operation=initial_completion,
                 )
@@ -1939,7 +2252,9 @@ async def handle_openai_compaction(
 ):
     requested_model = str(body.get("model") or MODEL_ID).lower()
     try:
-        model = resolve_model(requested_model)
+        service_tier = request_service_tier(body)
+        model = resolve_requested_model(requested_model, service_tier)
+        reasoning_effort = request_reasoning_effort(body)
     except ValueError as exc:
         return JSONResponse(
             {"error": {"message": str(exc), "type": "invalid_request_error"}},
@@ -1950,6 +2265,12 @@ async def handle_openai_compaction(
             {"error": {"message": "No valid Notion accounts are configured", "type": "api_error"}},
             status_code=503,
         )
+    log_event(
+        log,
+        "request_execution_settings",
+        service_tier=service_tier,
+        reasoning_effort=reasoning_effort,
+    )
     input_fingerprint = response_input_fingerprint(body)
     affinity = await turn_affinities.get(turn_key)
     if (
@@ -1990,29 +2311,36 @@ async def handle_openai_compaction(
     )
 
     async def initial_completion(notion: NotionAgentClient):
-        return await notion.complete(
+        return await complete_selected_model(notion, requested_model=requested_model, resolved_model=model,
             prompt=responses_compaction_prompt(body, continuing=False),
             model=model,
             web_search=False,
             workspace_search=False,
             ask_mode=True,
+            reasoning_effort=reasoning_effort,
+            service_tier=service_tier,
         )
 
     async def continuation_completion(notion: NotionAgentClient):
         if segment is None:
             return await initial_completion(notion)
-        return await notion.complete(
+        return await complete_selected_model(notion, requested_model=requested_model, resolved_model=model,
             prompt=prompt,
             model=model,
             web_search=False,
             workspace_search=False,
             ask_mode=True,
             thread_id=segment.notion_thread_id,
+            reasoning_effort=reasoning_effort,
+            service_tier=service_tier,
         )
 
     try:
         async with account_pool.lease(
             preferred_account_id=segment.account_id if continuing else None,
+            service_tier=service_tier,
+            reasoning_effort=reasoning_effort,
+            required_model=model,
         ) as lease:
             can_continue = continuing and segment is not None and lease.account_id == segment.account_id
             completion = await lease.run(
@@ -2078,18 +2406,22 @@ async def anthropic_messages(request: Request):
     body = await request.json()
     requested_model = str(body.get("model") or MODEL_ID).lower()
     set_log_context(model=requested_model, stream=bool(body.get("stream", False)))
-    log_event(
-        log,
-        "request_details",
-        tool_count=len(body.get("tools") or []) if isinstance(body.get("tools") or [], list) else 0,
-    )
     try:
-        model = resolve_model(requested_model)
+        service_tier = request_service_tier(body)
+        reasoning_effort = request_reasoning_effort(body)
+        model = resolve_requested_model(requested_model, service_tier)
     except ValueError as exc:
         return JSONResponse(
             {"type": "error", "error": {"type": "invalid_request_error", "message": str(exc)}},
             status_code=400,
         )
+    log_event(
+        log,
+        "request_details",
+        tool_count=len(body.get("tools") or []) if isinstance(body.get("tools") or [], list) else 0,
+        reasoning_effort=reasoning_effort,
+        service_tier=service_tier,
+    )
     if account_pool is None or account_pool.size == 0:
         return JSONResponse(
             {"type": "error", "error": {"type": "api_error", "message": "No valid Notion accounts are configured"}},
@@ -2098,16 +2430,22 @@ async def anthropic_messages(request: Request):
     prompt = anthropic_planner_prompt(body)
 
     async def initial_completion(notion: NotionAgentClient):
-        return await notion.complete(
+        return await complete_selected_model(notion, requested_model=requested_model, resolved_model=model,
             prompt=prompt,
             model=model,
             web_search=False,
             workspace_search=False,
             ask_mode=True,
+            reasoning_effort=reasoning_effort,
+            service_tier=service_tier,
         )
 
     try:
-        async with account_pool.lease() as lease:
+        async with account_pool.lease(
+            service_tier=service_tier,
+            reasoning_effort=reasoning_effort,
+            required_model=model,
+        ) as lease:
             response = await lease.run(initial_completion)
             tools = body.get("tools") or []
             if (
@@ -2117,7 +2455,7 @@ async def anthropic_messages(request: Request):
             ):
                 thread_id = response.thread_id
                 response = await lease.run(
-                    lambda notion: notion.complete(
+                    lambda notion: complete_selected_model(notion, requested_model=requested_model, resolved_model=model,
                         prompt=(
                             "Your previous answer was not a valid planner recommendation. "
                             "The local operator and the listed tools are available outside the model. "
@@ -2131,6 +2469,8 @@ async def anthropic_messages(request: Request):
                         workspace_search=False,
                         ask_mode=True,
                         thread_id=thread_id,
+                        reasoning_effort=reasoning_effort,
+                        service_tier=service_tier,
                     ),
                     retry_operation=initial_completion,
                 )
@@ -2171,15 +2511,19 @@ async def completions(request: Request):
     system, prompt = build_prompt(messages, tools)
     requested_model = str(body.get("model") or MODEL_ID).lower()
     set_log_context(model=requested_model, stream=bool(body.get("stream", False)))
+    try:
+        reasoning_effort = request_reasoning_effort(body)
+        service_tier = request_service_tier(body)
+        model = resolve_requested_model(requested_model, service_tier)
+    except ValueError as exc:
+        return JSONResponse({"error": {"message": str(exc)}}, status_code=400)
     log_event(
         log,
         "request_details",
         tool_count=len(tools) if isinstance(tools, list) else 0,
+        reasoning_effort=reasoning_effort,
+        service_tier=service_tier,
     )
-    try:
-        model = resolve_model(requested_model)
-    except ValueError as exc:
-        return JSONResponse({"error": {"message": str(exc)}}, status_code=400)
     stream = bool(body.get("stream"))
     planner_mode = bool(tools) and not WORKFLOW_ID
 
@@ -2190,13 +2534,19 @@ async def completions(request: Request):
 
     if not stream:
         try:
-            async with account_pool.lease() as lease:
+            async with account_pool.lease(
+                service_tier=service_tier,
+                reasoning_effort=reasoning_effort,
+                required_model=model,
+            ) as lease:
                 response = await complete_agent(
                     lease,
                     prompt,
                     system,
                     planner_mode=planner_mode,
                     model_id=model,
+                    reasoning_effort=reasoning_effort,
+                    service_tier=service_tier,
                 )
         except Exception as exc:
             log_event(
@@ -2259,7 +2609,11 @@ async def completions(request: Request):
 
     async def run() -> None:
         try:
-            async with account_pool.lease() as lease:
+            async with account_pool.lease(
+                service_tier=service_tier,
+                reasoning_effort=reasoning_effort,
+                required_model=model,
+            ) as lease:
                 if WORKFLOW_ID or planner_mode:
                     response = await complete_agent(
                         lease,
@@ -2267,16 +2621,20 @@ async def completions(request: Request):
                         system,
                         planner_mode=planner_mode,
                         model_id=model,
+                        reasoning_effort=reasoning_effort,
+                        service_tier=service_tier,
                     )
                 else:
                     response = await lease.run(
-                        lambda notion: notion.complete(
+                        lambda notion: complete_selected_model(notion, requested_model=requested_model, resolved_model=model,
                             prompt=prompt,
                             system=system,
                             model=model,
                             web_search=False,
                             workspace_search=True,
                             ask_mode=True,
+                            reasoning_effort=reasoning_effort,
+                            service_tier=service_tier,
                         )
                     )
                 full_text.append(response.text)

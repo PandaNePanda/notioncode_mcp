@@ -13,8 +13,9 @@ from typing import Any, AsyncIterator
 
 CONVERSATION_TTL = 30 * 24 * 60 * 60
 MAX_CONVERSATIONS = 500
-# Version 2 invalidates bindings created while Notion recorded the thread as Auto.
-STATE_VERSION = 2
+# Version 3 normalizes assistant message fingerprints so Codex-side rewrites do
+# not spuriously force a new Notion thread mid-conversation.
+STATE_VERSION = 3
 
 
 def conversation_storage_key(key: str) -> str:
@@ -22,12 +23,45 @@ def conversation_storage_key(key: str) -> str:
     return hashlib.sha256(key.encode()).hexdigest()
 
 
+def _normalized_segment_input_item(item: Any) -> Any:
+    """Return a stable per-item shape for conversation continuation checks.
+
+    Codex may rewrite previously generated assistant message text while keeping
+    the logical conversation unchanged. Using the raw assistant content makes
+    append-only history look like a rewrite, which incorrectly rolls the bridge
+    onto a fresh Notion thread and loses continuity. Preserve user and tool
+    payloads exactly, but collapse assistant message bodies to a stable summary.
+    """
+    if not isinstance(item, dict):
+        return item
+    if item.get("type") == "message" and item.get("role") == "assistant":
+        normalized: dict[str, Any] = {
+            "type": item.get("type"),
+            "role": item.get("role"),
+        }
+        content = item.get("content")
+        if isinstance(content, list):
+            normalized["content_types"] = [
+                part.get("type") if isinstance(part, dict) else type(part).__name__
+                for part in content
+            ]
+        elif content is not None:
+            normalized["content_type"] = type(content).__name__
+        return normalized
+    return item
+
+
 def response_input_fingerprints(body: dict[str, Any]) -> tuple[str, ...]:
     value = body.get("input")
     items = value if isinstance(value, list) else [value] if isinstance(value, str) else []
     return tuple(
         hashlib.sha256(
-            json.dumps(item, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+            json.dumps(
+                _normalized_segment_input_item(item),
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
         ).hexdigest()
         for item in items
     )

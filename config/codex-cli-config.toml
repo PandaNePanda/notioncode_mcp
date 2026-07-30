@@ -1,11 +1,14 @@
 model = "opus-5"
 model_provider = "notion-ai"
-model_reasoning_effort = "high"
+model_reasoning_effort = "medium"
+service_tier = "priority"
+enabled-reasoning-efforts = ["low", "medium", "high", "xhigh", "max", "ultra"]
+show-ultra-in-model-picker-slider = true
 model_context_window = 210000
 model_auto_compact_token_limit = 200000
 model_auto_compact_token_limit_scope = "total"
 tool_output_token_limit = 12000
-model_catalog_json = "__NOTIONCODE_ROOT__/config/codex-models.json"
+model_catalog_json = "__USER_HOME__/.notionagents/codex-models.json"
 
 [model_providers.notion-ai]
 name = "Notion AI"
@@ -20,3 +23,10 @@ args = ["__NOTIONCODE_ROOT__/notion-private-api-mcp/run-from-account.js"]
 startup_timeout_sec = 20
 tool_timeout_sec = 120
 enabled = false # __NOTION_MCP_ENABLED__
+
+[mcp_servers.external-inference]
+command = "node"
+args = ["__NOTIONCODE_ROOT__/notion-private-api-mcp/run-external-inference.js"]
+startup_timeout_sec = 20
+tool_timeout_sec = 300
+enabled = true

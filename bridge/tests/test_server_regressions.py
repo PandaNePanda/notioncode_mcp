@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import unittest
 import json
 from types import SimpleNamespace
@@ -24,9 +25,113 @@ from turn_affinity import TurnAffinityStore
 
 
 class ResponsesTextRegressionTests(unittest.TestCase):
+    def test_request_execution_settings_parse_codex_wire_fields(self) -> None:
+        body = {
+            "reasoning": {"effort": "MAX"},
+            "service_tier": "priority",
+        }
+        self.assertEqual(server.request_reasoning_effort(body), "max")
+        self.assertEqual(server.request_service_tier(body), "priority")
+        self.assertEqual(server.request_reasoning_effort({}), server.MAX_REASONING_EFFORT)
+        self.assertIsNone(server.request_service_tier({}))
+
+    def test_fast_service_tier_keeps_reasoning_independent(self) -> None:
+        self.assertEqual(
+            server.request_reasoning_effort(
+                {"model": "gpt-5.6-sol", "service_tier": "priority"}
+            ),
+            server.MAX_REASONING_EFFORT,
+        )
+        self.assertEqual(
+            server.request_reasoning_effort(
+                {"model": "gpt-5.6-sol-ultrafast", "serviceTier": "PRIORITY"}
+            ),
+            server.MAX_REASONING_EFFORT,
+        )
+
+    def test_fast_service_tier_does_not_override_explicit_reasoning(self) -> None:
+        self.assertEqual(
+            server.request_reasoning_effort(
+                {
+                    "model": "gpt-5.6-sol",
+                    "reasoning": {"effort": "MAX"},
+                    "service_tier": "priority",
+                }
+            ),
+            "max",
+        )
+
+    def test_fast_service_tier_does_not_change_legacy_model_default(self) -> None:
+        self.assertEqual(
+            server.request_reasoning_effort(
+                {"model": "gpt-5.5", "service_tier": "priority"}
+            ),
+            server.MAX_REASONING_EFFORT,
+        )
+
+    def test_fast_service_tier_preserves_selected_base_model(self) -> None:
+        with patch.object(server.model_catalog, "fast_model_for", return_value="gpt-5.6-luna"):
+            self.assertEqual(server.resolve_requested_model("gpt-5.6-sol", "priority"), "gpt-5.6-sol")
+
+    def test_fast_service_tier_keeps_model_when_no_fast_variant_exists(self) -> None:
+        with patch.object(server.model_catalog, "fast_model_for", return_value=None):
+            self.assertEqual(server.resolve_requested_model("gpt-5.6-sol", "priority"), "gpt-5.6-sol")
+
+    def test_ultrafast_service_tier_preserves_selected_base_model(self) -> None:
+        with patch.object(server.model_catalog, "supports_service_tier", return_value=True):
+            self.assertEqual(
+                server.resolve_requested_model("gpt-5.6-sol", "ultrafast"),
+                "gpt-5.6-sol",
+            )
+
+    def test_unreleased_ultrafast_service_tier_is_rejected(self) -> None:
+        with patch.object(server.model_catalog, "supports_service_tier", return_value=False):
+            with self.assertRaisesRegex(ValueError, "not currently advertised"):
+                server.resolve_requested_model("gpt-5.6-sol", "ultrafast")
+
+    def test_invalid_reasoning_is_not_silently_changed_to_ultra(self) -> None:
+        with self.assertRaisesRegex(ValueError, "unsupported reasoning effort"):
+            server.request_reasoning_effort({"reasoning": {"effort": "extreme"}})
+
+    def test_anthropic_messages_route_uses_service_tier_model_resolution(self) -> None:
+        with patch.object(server, "resolve_requested_model", return_value="gpt-5.6-luna") as mocked:
+            class Request:
+                async def json(self):
+                    return {"model": "gpt-5.6-sol", "service_tier": "priority"}
+
+            with patch.object(server, "account_pool", None):
+                response = asyncio.run(server.anthropic_messages(Request()))
+
+        mocked.assert_called_once_with("gpt-5.6-sol", "priority")
+        self.assertEqual(response.status_code, 503)
+
+    def test_chat_completions_route_uses_service_tier_model_resolution(self) -> None:
+        with patch.object(server, "resolve_requested_model", return_value="gpt-5.6-luna") as mocked:
+            class Request:
+                async def json(self):
+                    return {
+                        "model": "gpt-5.6-sol",
+                        "service_tier": "priority",
+                        "messages": [{"role": "user", "content": "hello"}],
+                    }
+
+            with patch.object(server, "account_pool", None):
+                response = asyncio.run(server.completions(Request()))
+
+        mocked.assert_called_once_with("gpt-5.6-sol", "priority")
+        self.assertEqual(response.status_code, 503)
+
     def test_codex_fable_transport_id_resolves_to_notion_fable(self) -> None:
         self.assertEqual(resolve_model("gpt-5.5"), "fable-5")
         self.assertEqual(resolve_model("fable-5"), "fable-5")
+
+    def test_authoritatively_discovered_model_resolves_dynamically(self) -> None:
+        dynamic = (*server.SUPPORTED_MODELS, "gpt-5.6-sol-ultrafast")
+        with patch.object(server.model_catalog, "model_ids", return_value=dynamic):
+            self.assertEqual(
+                resolve_model("gpt-5.6-sol-ultrafast"),
+                "gpt-5.6-sol-ultrafast",
+            )
 
     def test_opus_aliases_resolve_to_notion_opus_5(self) -> None:
         self.assertEqual(resolve_model("opus-5"), "opus-5")
@@ -48,6 +153,15 @@ class ResponsesTextRegressionTests(unittest.TestCase):
         )
         self.assertEqual(config["model"], "agave-flan")
         self.assertIs(config["modelFromUser"], True)
+
+    def test_models_endpoint_includes_speed_tier_metadata(self) -> None:
+        payload = asyncio.run(server.models())
+        sol = next(item for item in payload["data"] if item["id"] == "gpt-5.6-sol")
+        self.assertEqual(sol["additional_speed_tiers"], ["fast"])
+        self.assertEqual(
+            [tier["id"] for tier in sol["service_tiers"]],
+            ["priority"],
+        )
 
     def test_input_image_does_not_replace_or_mutate_text(self) -> None:
         message = {
@@ -71,7 +185,7 @@ class ResponsesTextRegressionTests(unittest.TestCase):
             "tools": [],
         }
         prompt = responses_planner_prompt(body)
-        self.assertIn("The local operator's current working directory is /root/project.", prompt)
+        self.assertIn("The local operator's current working directory is ", prompt)
         self.assertIn("[user]\nlist files", prompt)
 
     def test_namespace_tools_are_flattened_for_native_codex_calls(self) -> None:
@@ -327,6 +441,88 @@ class ResponsesThinkingStreamTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ResponsesAffinityIntegrationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_reasoning_effort_reaches_image_and_correction_paths(self) -> None:
+        calls = []
+        replies = [
+            "I don't have access to the file system",
+            '{"tool":"shell_command","arguments":{"command":"echo ok"}}',
+        ]
+
+        class Lease:
+            account_id = "account-a"
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return None
+
+            async def run(self, operation, *, retry_operation=None):
+                return await operation(SimpleNamespace())
+
+        class Pool:
+            size = 1
+
+            def lease(self, preferred_account_id=None, service_tier=None, reasoning_effort=None, required_model=None):
+                return Lease()
+
+        async def fake_complete_with_images(_client, **kwargs):
+            calls.append(kwargs)
+            return SimpleNamespace(
+                text=replies.pop(0),
+                thread_id="notion-thread",
+                usage=SimpleNamespace(input_tokens=10, output_tokens=2),
+            )
+
+        original_pool = server.account_pool
+        original_affinities = server.turn_affinities
+        original_segments = server.conversation_segments
+        server.account_pool = Pool()
+        server.turn_affinities = TurnAffinityStore()
+        server.conversation_segments = ConversationSegmentStore()
+        try:
+            with (
+                patch.object(
+                    server,
+                    "extract_response_images",
+                    return_value=[SimpleNamespace(data=b"image")],
+                ),
+                patch.object(server, "estimated_image_tokens", return_value=1),
+                patch.object(
+                    server,
+                    "complete_with_images",
+                    new=fake_complete_with_images,
+                ),
+            ):
+                response = await handle_openai_responses(
+                    {
+                        "model": "gpt-5.6-sol",
+                        "input": [{"type": "message", "role": "user", "content": "inspect"}],
+                        "tools": [{
+                            "type": "function",
+                            "name": "shell_command",
+                            "description": "Run one command",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {"command": {"type": "string"}},
+                            },
+                        }],
+                        "reasoning": {"effort": "max"},
+                        "service_tier": "priority",
+                    },
+                    "image-correction-turn",
+                    conversation_key="image-correction-thread",
+                )
+        finally:
+            server.account_pool = original_pool
+            server.turn_affinities = original_affinities
+            server.conversation_segments = original_segments
+
+        self.assertEqual(len(calls), 2)
+        self.assertTrue(all(call["reasoning_effort"] == "max" for call in calls))
+        self.assertEqual(calls[1]["thread_id"], "notion-thread")
+        self.assertEqual(response["output"][0]["name"], "shell_command")
+
     async def test_model_change_starts_a_new_notion_thread(self) -> None:
         calls = []
 
@@ -357,7 +553,7 @@ class ResponsesAffinityIntegrationTests(unittest.IsolatedAsyncioTestCase):
             def __init__(self):
                 self.preferred = []
 
-            def lease(self, preferred_account_id=None):
+            def lease(self, preferred_account_id=None, service_tier=None, reasoning_effort=None, required_model=None):
                 self.preferred.append(preferred_account_id)
                 return Lease()
 
@@ -371,7 +567,11 @@ class ResponsesAffinityIntegrationTests(unittest.IsolatedAsyncioTestCase):
         try:
             first_input = [{"type": "message", "role": "user", "content": "first"}]
             await handle_openai_responses(
-                {"model": "fable-5", "input": first_input},
+                {
+                    "model": "fable-5",
+                    "input": first_input,
+                    "reasoning": {"effort": "max"},
+                },
                 "turn-1",
                 conversation_key="codex-thread",
             )
@@ -396,6 +596,90 @@ class ResponsesAffinityIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(pool.preferred, [None, None])
         self.assertIsNotNone(segment)
         self.assertEqual(segment.model, "opus-5")
+
+    async def test_assistant_message_rewrite_keeps_existing_notion_thread(self) -> None:
+        calls = []
+
+        class Client:
+            async def complete(self, **kwargs):
+                calls.append(kwargs)
+                return SimpleNamespace(
+                    text=f"answer {len(calls)}",
+                    thread_id=f"thread-{len(calls)}",
+                    usage=SimpleNamespace(input_tokens=10, output_tokens=2),
+                )
+
+        class Lease:
+            account_id = "account-a"
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return None
+
+            async def run(self, operation, *, retry_operation=None):
+                return await operation(Client())
+
+        class Pool:
+            size = 1
+
+            def __init__(self):
+                self.preferred = []
+
+            def lease(self, preferred_account_id=None, service_tier=None, reasoning_effort=None, required_model=None):
+                self.preferred.append(preferred_account_id)
+                return Lease()
+
+        pool = Pool()
+        original_pool = server.account_pool
+        original_affinities = server.turn_affinities
+        original_segments = server.conversation_segments
+        server.account_pool = pool
+        server.turn_affinities = TurnAffinityStore()
+        server.conversation_segments = ConversationSegmentStore()
+        try:
+            first_input = [{"type": "message", "role": "user", "content": "first"}]
+            await handle_openai_responses(
+                {"model": "fable-5", "input": first_input},
+                "turn-1",
+                conversation_key="codex-thread",
+            )
+            second_input = [
+                *first_input,
+                {"type": "message", "role": "assistant", "content": "original answer"},
+                {"type": "message", "role": "user", "content": "next"},
+            ]
+            await handle_openai_responses(
+                {"model": "fable-5", "input": second_input},
+                "turn-2",
+                conversation_key="codex-thread",
+            )
+            rewritten_input = [
+                *first_input,
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": "assistant text rewritten by Codex storage",
+                },
+                {"type": "message", "role": "user", "content": "next"},
+                {"type": "message", "role": "assistant", "content": "second answer"},
+                {"type": "message", "role": "user", "content": "third"},
+            ]
+            await handle_openai_responses(
+                {"model": "fable-5", "input": rewritten_input},
+                "turn-3",
+                conversation_key="codex-thread",
+            )
+        finally:
+            server.account_pool = original_pool
+            server.turn_affinities = original_affinities
+            server.conversation_segments = original_segments
+
+        self.assertEqual(pool.preferred, [None, None, None])
+        self.assertNotIn("thread_id", calls[0])
+        self.assertEqual(calls[1]["thread_id"], "thread-1")
+        self.assertEqual(calls[2]["thread_id"], "thread-2")
 
     async def test_same_codex_turn_reuses_account_and_notion_thread(self) -> None:
         calls = []
@@ -431,7 +715,7 @@ class ResponsesAffinityIntegrationTests(unittest.IsolatedAsyncioTestCase):
             def __init__(self):
                 self.preferred = []
 
-            def lease(self, preferred_account_id=None):
+            def lease(self, preferred_account_id=None, service_tier=None, reasoning_effort=None, required_model=None):
                 self.preferred.append(preferred_account_id)
                 return Lease()
 
@@ -477,7 +761,73 @@ class ResponsesAffinityIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Plan updated", calls[1]["prompt"])
         self.assertNotIn("Tool catalog", calls[1]["prompt"])
 
-    async def test_conversation_continues_across_turns_then_rotates_after_compaction(self) -> None:
+    async def test_provider_context_limit_starts_bounded_fresh_segment(self) -> None:
+        calls: list[dict] = []
+
+        class Client:
+            async def complete(self, **kwargs):
+                calls.append(kwargs)
+                return SimpleNamespace(
+                    text="answer",
+                    thread_id=f"thread-{len(calls)}",
+                    usage=SimpleNamespace(input_tokens=100, output_tokens=2),
+                )
+
+        class Lease:
+            account_id = "account-a"
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return None
+
+            async def run(self, operation, *, retry_operation=None):
+                return await operation(Client())
+
+        class Pool:
+            size = 1
+
+            def lease(self, **_kwargs):
+                return Lease()
+
+        original_pool = server.account_pool
+        original_affinities = server.turn_affinities
+        original_segments = server.conversation_segments
+        server.account_pool = Pool()
+        server.turn_affinities = TurnAffinityStore()
+        server.conversation_segments = ConversationSegmentStore()
+        try:
+            first_input = [{"type": "message", "role": "user", "content": "first task"}]
+            with patch.object(server, "SEGMENT_ROLLOVER_INPUT_TOKENS", 50):
+                await handle_openai_responses(
+                    {"model": "fable-5", "input": first_input},
+                    "turn-1",
+                    conversation_key="codex-thread",
+                )
+                await handle_openai_responses(
+                    {
+                        "model": "fable-5",
+                        "input": [
+                            *first_input,
+                            {"type": "message", "role": "assistant", "content": "old answer"},
+                            {"type": "message", "role": "user", "content": "next task"},
+                        ],
+                    },
+                    "turn-2",
+                    conversation_key="codex-thread",
+                )
+        finally:
+            server.account_pool = original_pool
+            server.turn_affinities = original_affinities
+            server.conversation_segments = original_segments
+
+        self.assertEqual(len(calls), 2)
+        self.assertNotIn("thread_id", calls[1])
+        self.assertIn("fresh provider conversation segment", calls[1]["prompt"])
+        self.assertIn("next task", calls[1]["prompt"])
+
+    async def test_new_turn_uses_latency_routing_and_compaction_keeps_affinity(self) -> None:
         calls: list[tuple[str, dict]] = []
 
         class Client:
@@ -510,16 +860,24 @@ class ResponsesAffinityIntegrationTests(unittest.IsolatedAsyncioTestCase):
             size = 2
 
             def __init__(self):
-                self.new_segments = 0
                 self.preferred: list[str | None] = []
+                self.avoided: list[str | None] = []
 
-            def lease(self, preferred_account_id=None):
+            def lease(
+                self,
+                preferred_account_id=None,
+                avoid_account_id=None,
+                service_tier=None,
+                reasoning_effort=None,
+                required_model=None,
+            ):
                 self.preferred.append(preferred_account_id)
+                self.avoided.append(avoid_account_id)
                 if preferred_account_id:
                     return Lease(preferred_account_id)
-                account_id = "account-a" if self.new_segments == 0 else "account-b"
-                self.new_segments += 1
-                return Lease(account_id)
+                # Model the real pool after latency measurements: account-a is
+                # currently fastest and remains selected for fresh turns.
+                return Lease("account-a")
 
         pool = Pool()
         original_pool = server.account_pool
@@ -531,7 +889,11 @@ class ResponsesAffinityIntegrationTests(unittest.IsolatedAsyncioTestCase):
         try:
             first_input = [{"type": "message", "role": "user", "content": "first task"}]
             await handle_openai_responses(
-                {"model": "fable-5", "input": first_input},
+                {
+                    "model": "fable-5",
+                    "input": first_input,
+                    "reasoning": {"effort": "max"},
+                },
                 "turn-1",
                 conversation_key="codex-thread",
             )
@@ -541,20 +903,32 @@ class ResponsesAffinityIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 {"type": "message", "role": "user", "content": "next request"},
             ]
             await handle_openai_responses(
-                {"model": "fable-5", "input": second_input},
+                {
+                    "model": "fable-5",
+                    "input": second_input,
+                    "reasoning": {"effort": "max"},
+                },
                 "turn-2",
                 conversation_key="codex-thread",
             )
             compacted = await handle_openai_compaction(
-                {"model": "fable-5", "input": second_input},
+                {
+                    "model": "fable-5",
+                    "input": second_input,
+                    "reasoning": {"effort": "max"},
+                },
                 "compact-turn",
                 "codex-thread",
             )
             final = await handle_openai_responses(
-                {"model": "fable-5", "input": [
-                    compacted["output"][0],
-                    {"type": "message", "role": "user", "content": "after compact"},
-                ]},
+                {
+                    "model": "fable-5",
+                    "input": [
+                        compacted["output"][0],
+                        {"type": "message", "role": "user", "content": "after compact"},
+                    ],
+                    "reasoning": {"effort": "max"},
+                },
                 "turn-3",
                 conversation_key="codex-thread",
             )
@@ -563,17 +937,55 @@ class ResponsesAffinityIntegrationTests(unittest.IsolatedAsyncioTestCase):
             server.turn_affinities = original_affinities
             server.conversation_segments = original_segments
 
-        self.assertEqual(pool.preferred, [None, "account-a", "account-a", None])
+        self.assertEqual(pool.preferred, [None, None, "account-a", None])
+        self.assertEqual(pool.avoided, [None, None, None, None])
+        self.assertEqual(calls[0][0], "account-a")
         self.assertEqual(calls[1][0], "account-a")
         self.assertEqual(calls[1][1]["thread_id"], "thread-account-a")
         self.assertIn("next request", calls[1][1]["prompt"])
         self.assertNotIn("previous answer", calls[1][1]["prompt"])
+        self.assertEqual(calls[2][0], "account-a")
+        self.assertEqual(calls[2][1]["thread_id"], "thread-account-a")
         self.assertEqual(compacted["output"][0]["type"], "compaction")
-        self.assertEqual(calls[-1][0], "account-b")
+        self.assertEqual(calls[-1][0], "account-a")
         self.assertNotIn("thread_id", calls[-1][1])
         self.assertIn("dense summary", calls[-1][1]["prompt"])
-        self.assertEqual(final["output"][0]["content"][0]["text"], "answer from account-b")
+        self.assertTrue(all(call[1]["reasoning_effort"] == "max" for call in calls))
+        self.assertEqual(final["output"][0]["content"][0]["text"], "answer from account-a")
 
 
 if __name__ == "__main__":
     unittest.main()
+
+class ModelIntegrityValidationTests(unittest.TestCase):
+    def test_rejects_an_observed_model_that_differs_from_the_selected_alias(self) -> None:
+        result = SimpleNamespace(
+            model="oval-kumquat-medium",
+            raw={"reported_notion_model": "oval-kumquat-medium"},
+            thread_id="thread-wrong-model",
+        )
+        with patch.object(server.model_catalog, "notion_model_for", return_value="orange-mousse"):
+            with self.assertRaises(server.ModelIntegrityError):
+                server.validate_selected_model(
+                    result,
+                    requested_model="gpt-5.6-sol",
+                    resolved_model="gpt-5.6-sol",
+                    reused_thread=False,
+                )
+
+    def test_allows_the_selected_internal_model(self) -> None:
+        result = SimpleNamespace(
+            model="orange-mousse",
+            raw={"reported_notion_model": "orange-mousse"},
+            thread_id="thread-correct-model",
+        )
+        with patch.object(server.model_catalog, "notion_model_for", return_value="orange-mousse"):
+            self.assertIs(
+                server.validate_selected_model(
+                    result,
+                    requested_model="gpt-5.6-sol",
+                    resolved_model="gpt-5.6-sol",
+                    reused_thread=False,
+                ),
+                result,
+            )

@@ -43,7 +43,8 @@
   ],
   "scripts": {
     "start": "node ./src/server.js",
-    "check": "node --check ./src/server.js && node --check ./src/notion-client.js && node --check ./src/notion-blocks.js && node --check ./src/markdown.js"
+    "check": "node --check ./src/server.js && node --check ./src/notion-client.js && node --check ./src/notion-blocks.js && node --check ./src/markdown.js && node --check ./src/external-inference-client.js && node --check ./src/external-inference-server.js && node --check ./run-external-inference.js",
+    "test": "node --test ./src/external-inference-client.test.js"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",

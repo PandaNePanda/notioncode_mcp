@@ -3,16 +3,25 @@
 import fs from "node:fs";
 import path from "node:path";
 
-const [templatePath, destination, projectRoot, userHome, notionMcpEnabled] = process.argv.slice(2);
+const [
+  templatePath,
+  destination,
+  projectRoot,
+  userHome,
+  notionMcpEnabled,
+  requestedReasoningEffort = "",
+] = process.argv.slice(2);
+const supportedReasoningEfforts = new Set(["low", "medium", "high", "xhigh", "max", "ultra"]);
 if (
   !templatePath
   || !destination
   || !projectRoot
   || !userHome
   || !["true", "false"].includes(notionMcpEnabled)
+  || (requestedReasoningEffort && !supportedReasoningEfforts.has(requestedReasoningEffort))
 ) {
   throw new Error(
-    "usage: install-codex-config.mjs <template> <destination> <project-root> <user-home> <notion-mcp-enabled:true|false>",
+    "usage: install-codex-config.mjs <template> <destination> <project-root> <user-home> <notion-mcp-enabled:true|false> [reasoning-effort:low|medium|high|xhigh|max|ultra]",
   );
 }
 
@@ -24,15 +33,27 @@ const ROOT_KEYS = new Set([
   "model",
   "model_provider",
   "model_reasoning_effort",
+  "service_tier",
+  "enabled-reasoning-efforts",
+  "show-ultra-in-model-picker-slider",
   "model_context_window",
   "model_auto_compact_token_limit",
   "model_auto_compact_token_limit_scope",
   "tool_output_token_limit",
   "model_catalog_json",
 ]);
+const DESKTOP_KEYS = new Set([
+  "show-ultra-in-model-picker-slider",
+  "enabled-reasoning-efforts",
+]);
+const MANAGED_DESKTOP_LINES = [
+  "show-ultra-in-model-picker-slider = true",
+  'enabled-reasoning-efforts = ["low", "medium", "high", "xhigh", "max", "ultra"]',
+];
 const MANAGED_TABLES = new Set([
   "model_providers.notion-ai",
   "mcp_servers.notion-private",
+  "mcp_servers.external-inference",
 ]);
 
 function portable(value) {
@@ -70,41 +91,86 @@ function withoutManagedMarkers(value) {
 
 function cleanExisting(value) {
   const lines = withoutManagedMarkers(value).split(/\r?\n/);
-  const kept = [];
-  let currentTable = null;
-  let skipManagedTable = false;
+  const rootLines = [];
+  const sections = [];
+  let currentSection = null;
   for (const line of lines) {
-    const table = line.match(/^\s*\[([^\]]+)]\s*(?:#.*)?$/);
+    const table = line.match(/^\s*\[([^\]]+)\]\s*(?:#.*)?$/);
     if (table) {
-      currentTable = table[1].trim();
-      skipManagedTable = MANAGED_TABLES.has(currentTable);
-      if (!skipManagedTable) kept.push(line);
+      currentSection = {
+        name: table[1].trim(),
+        header: line,
+        lines: [],
+      };
+      sections.push(currentSection);
       continue;
     }
-    if (skipManagedTable) continue;
-    const assignment = line.match(/^\s*([A-Za-z0-9_-]+)\s*=/);
-    if (currentTable === null && assignment && ROOT_KEYS.has(assignment[1])) continue;
-    if (
-      currentTable === "features"
-      && assignment
-      && ["apps", "plugins", "remote_plugin"].includes(assignment[1])
-      && /^\s*[A-Za-z0-9_-]+\s*=\s*false\s*(?:#.*)?$/.test(line)
-    ) {
-      continue;
-    }
-    kept.push(line);
+    if (currentSection) currentSection.lines.push(line);
+    else rootLines.push(line);
   }
-  return kept.join("\n").trim();
+
+  const cleanedRoot = rootLines.filter((line) => {
+    const assignment = line.match(/^\s*([A-Za-z0-9_-]+)\s*=/);
+    return !(assignment && ROOT_KEYS.has(assignment[1]));
+  });
+  const desktopSections = sections.filter((section) => section.name === "desktop");
+  const desktopLines = desktopSections.flatMap((section) => section.lines).filter((line) => {
+    const assignment = line.match(/^\s*([A-Za-z0-9_-]+)\s*=/);
+    return !(assignment && DESKTOP_KEYS.has(assignment[1]));
+  });
+  const renderedSections = [];
+  let desktopWritten = false;
+  for (const section of sections) {
+    if (MANAGED_TABLES.has(section.name)) continue;
+    if (section.name === "desktop") {
+      if (desktopWritten) continue;
+      desktopWritten = true;
+      renderedSections.push([
+        section.header,
+        ...MANAGED_DESKTOP_LINES,
+        ...desktopLines,
+      ].join("\n").trim());
+      continue;
+    }
+    const sectionLines = section.name === "features"
+      ? section.lines.filter((line) => {
+          const assignment = line.match(/^\s*([A-Za-z0-9_-]+)\s*=/);
+          return !(
+            assignment
+            && ["apps", "plugins", "remote_plugin"].includes(assignment[1])
+            && /^\s*[A-Za-z0-9_-]+\s*=\s*false\s*(?:#.*)?$/.test(line)
+          );
+        })
+      : section.lines;
+    renderedSections.push([section.header, ...sectionLines].join("\n").trim());
+  }
+  if (!desktopWritten) {
+    renderedSections.push(["[desktop]", ...MANAGED_DESKTOP_LINES].join("\n"));
+  }
+  return [cleanedRoot.join("\n").trim(), ...renderedSections]
+    .filter(Boolean)
+    .join("\n\n")
+    .trim();
 }
 
-const rendered = render(fs.readFileSync(templatePath, "utf8")).trim();
+const existing = fs.existsSync(destination)
+  ? fs.readFileSync(destination, "utf8")
+  : "";
+const existingReasoningEffort = existing.match(
+  /^[^\S\r\n]*model_reasoning_effort[^\S\r\n]*=[^\S\r\n]*"(low|medium|high|xhigh|max|ultra)"[^\S\r\n]*(?:#[^\r\n]*)?$/m,
+)?.[1];
+let rendered = render(fs.readFileSync(templatePath, "utf8")).trim();
+const effectiveReasoningEffort = requestedReasoningEffort || existingReasoningEffort;
+if (effectiveReasoningEffort) {
+  rendered = rendered.replace(
+    /^[^\S\r\n]*model_reasoning_effort[^\S\r\n]*=[^\r\n]*/m,
+    `model_reasoning_effort = "${effectiveReasoningEffort}"`,
+  );
+}
 const firstTable = rendered.search(/^\s*\[/m);
 if (firstTable === -1) throw new Error("Codex template has no provider table");
 const managedRoot = rendered.slice(0, firstTable).trim();
 const managedTables = rendered.slice(firstTable).trim();
-const existing = fs.existsSync(destination)
-  ? fs.readFileSync(destination, "utf8")
-  : "";
 const cleaned = cleanExisting(existing);
 const firstExistingTable = cleaned.search(/^\s*\[/m);
 const existingRoot = firstExistingTable === -1 ? cleaned : cleaned.slice(0, firstExistingTable).trim();
