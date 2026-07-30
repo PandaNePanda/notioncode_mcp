@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -20,6 +21,33 @@ class ConversationSegmentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(input_prefix_length(first, extended), 1)
         self.assertIsNone(input_prefix_length(first, rewritten))
 
+    def test_ignores_assistant_message_text_rewrites_for_prefix_detection(self) -> None:
+        previous = response_input_fingerprints(
+            {
+                "input": [
+                    {"type": "message", "role": "user", "content": "first"},
+                    {"type": "message", "role": "assistant", "content": "draft one"},
+                    {"type": "message", "role": "user", "content": "second"},
+                ]
+            }
+        )
+        current = response_input_fingerprints(
+            {
+                "input": [
+                    {"type": "message", "role": "user", "content": "first"},
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": "same turn but rewritten by Codex",
+                    },
+                    {"type": "message", "role": "user", "content": "second"},
+                    {"type": "message", "role": "assistant", "content": "new reply"},
+                    {"type": "message", "role": "user", "content": "third"},
+                ]
+            }
+        )
+        self.assertEqual(input_prefix_length(previous, current), 3)
+
     async def test_persists_only_hashed_identity_and_no_conversation_content(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "conversation-state.json"
@@ -38,9 +66,10 @@ class ConversationSegmentTests(unittest.IsolatedAsyncioTestCase):
             )
             raw = path.read_text(encoding="utf8")
             self.assertNotIn("secret-codex-thread", raw)
-            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+            if os.name != "nt":
+                self.assertEqual(path.stat().st_mode & 0o777, 0o600)
             payload = json.loads(raw)
-            self.assertEqual(payload["version"], 2)
+            self.assertEqual(payload["version"], 3)
 
             restored = await ConversationSegmentStore(path).get("secret-codex-thread")
             self.assertIsNotNone(restored)

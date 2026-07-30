@@ -38,6 +38,7 @@ PYTHONPATH=bridge ./.runtime/notion-agent-cli-venv/bin/python -m unittest discov
 npm --prefix runtime test
 npm --prefix runtime run check
 npm --prefix notion-private-api-mcp run check
+npm --prefix notion-private-api-mcp test
 node --test scripts/install-codex-config.test.mjs
 node --test scripts/patch-codex-webview.test.mjs
 node --test scripts/render-config.test.mjs

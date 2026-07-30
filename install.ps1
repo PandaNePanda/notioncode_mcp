@@ -1,6 +1,8 @@
 [CmdletBinding()]
 param(
     [string]$CodeRoot = $HOME,
+    [ValidateSet("low", "medium", "high", "xhigh", "max", "ultra")]
+    [string]$ReasoningEffort = "",
     [switch]$NoAutoStart,
     [switch]$NoStart
 )
@@ -15,6 +17,8 @@ $PythonExe = Join-Path $VenvDir "Scripts\python.exe"
 $AccountHome = Join-Path $HOME ".notionagents"
 $ModelsTemplate = Join-Path $Root "state-template\.notionagents\models.json"
 $ModelsPath = Join-Path $AccountHome "models.json"
+$CodexModelsTemplate = Join-Path $Root "config\codex-models.json"
+$CodexModelsPath = Join-Path $AccountHome "codex-models.json"
 $RuntimeEnv = Join-Path $RuntimeDir ".env"
 $StateDir = Join-Path $Root "state"
 $CodexHome = Join-Path $HOME ".codex"
@@ -41,6 +45,7 @@ if ($LASTEXITCODE -ne 0) { throw "Private Notion MCP npm dependency installation
 
 & node.exe (Join-Path $Root "scripts\install-model-aliases.mjs") $ModelsTemplate $ModelsPath
 if ($LASTEXITCODE -ne 0) { throw "Model alias installation failed." }
+Copy-Item -LiteralPath $CodexModelsTemplate -Destination $CodexModelsPath -Force
 
 & $PythonExe (Join-Path $Root "bridge\migrate_accounts.py") $AccountHome
 if ($LASTEXITCODE -ne 0) { throw "Notion account migration failed." }
@@ -61,10 +66,12 @@ if (-not (Test-Path $RuntimeEnv)) {
     Write-Utf8NoBom $RuntimeEnv ($runtimeEnvContent + [Environment]::NewLine)
 }
 
-& node.exe (Join-Path $Root "scripts\install-codex-config.mjs") (Join-Path $Root "config\codex-cli-config.toml") (Join-Path $CodexHome "config.toml") $Root $HOME $NotionMcpEnabled
+& node.exe (Join-Path $Root "scripts\install-codex-config.mjs") (Join-Path $Root "config\codex-cli-config.toml") (Join-Path $CodexHome "config.toml") $Root $HOME $NotionMcpEnabled $ReasoningEffort
 if ($LASTEXITCODE -ne 0) { throw "Codex configuration generation failed." }
 & node.exe (Join-Path $Root "scripts\patch-codex-webview.mjs") $HOME
 if ($LASTEXITCODE -ne 0) { throw "Codex VS Code webview compatibility patch failed." }
+& node.exe (Join-Path $Root "scripts\patch-codex-desktop.mjs")
+if ($LASTEXITCODE -ne 0) { throw "Codex Desktop Fast compatibility patch failed." }
 & node.exe (Join-Path $Root "scripts\render-config.mjs") (Join-Path $Root "config\opencode.jsonc") (Join-Path $OpenCodeHome "opencode.jsonc") $Root $HOME
 if ($LASTEXITCODE -ne 0) { throw "OpenCode configuration generation failed." }
 
@@ -80,10 +87,28 @@ $startupDir = [Environment]::GetFolderPath("Startup")
 $startupCmd = Join-Path $startupDir "notioncode-mcp.cmd"
 if (-not $NoAutoStart) {
     $escapedStart = (Join-Path $Root "start.ps1").Replace('"', '""')
-    @(
+    $escapedStartupLog = (Join-Path $Root ".runtime\logs\startup.log").Replace('"', '""')
+    $startupContent = @(
         "@echo off"
-        "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File `"$escapedStart`""
-    ) | Set-Content -LiteralPath $startupCmd -Encoding ASCII
+        "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File `"$escapedStart`" >> `"$escapedStartupLog`" 2>&1"
+    ) -join "`r`n"
+    # Write explicitly instead of piping into Set-Content. On some Windows
+    # builds an existing zero-byte Startup file can make Set-Content fail with
+    # "Stream was not readable" even though the file is writable.
+    [IO.File]::WriteAllText($startupCmd, $startupContent + "`r`n", [Text.Encoding]::ASCII)
+
+    # Older releases created a second Startup entry that directly launched
+    # notion-agent from a checkout-specific path. Disable only that known legacy
+    # launcher so login cannot race two independent local service stacks.
+    $legacyStartupVbs = Join-Path $startupDir "StartNotionAgent.vbs"
+    if (Test-Path -LiteralPath $legacyStartupVbs -PathType Leaf) {
+        $legacyText = Get-Content -LiteralPath $legacyStartupVbs -Raw
+        if ($legacyText -match '(?i)notion-agent\.exe' -and $legacyText -match '(?i)\bserve\b') {
+            Move-Item -LiteralPath $legacyStartupVbs -Destination ($legacyStartupVbs + ".disabled-notioncode") -Force
+        } else {
+            Write-Warning "StartNotionAgent.vbs was not recognized as the legacy NotionCode launcher and was left unchanged."
+        }
+    }
 }
 
 if (-not $NoStart) {
@@ -94,6 +119,7 @@ if (-not $NoStart) {
 Write-Host "Installation completed."
 Write-Host "Notion account directory: $AccountHome"
 Write-Host "Model aliases: $ModelsPath"
+Write-Host "Codex model catalog: $CodexModelsPath"
 Write-Host "Codex VS Code configuration: $(Join-Path $CodexHome 'config.toml')"
 Write-Host "OpenCode profile: $OpenCodeHome"
 Write-Host "Health endpoint: http://127.0.0.1:8765/healthz"

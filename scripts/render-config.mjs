@@ -10,7 +10,7 @@ if (!source || !destination || !projectRoot || !userHome) {
 
 const portable = (value) => {
   const normalized = value.replaceAll("\\", "/");
-  if (/^[A-Za-z]:\//.test(normalized) || normalized.startsWith("//")) {
+  if (/^[A-Za-z]:\//.test(normalized) || normalized.startsWith("/")) {
     return normalized;
   }
   return path.resolve(value).replaceAll("\\", "/");

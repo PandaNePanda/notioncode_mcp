@@ -166,6 +166,15 @@ Set-Location .\notioncode_mcp
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
+Интенсивность рассуждений можно свободно выбрать при установке. Поддерживаются
+`low`, `medium`, `high`, `xhigh`, `max` и `ultra`. Если параметр не указан,
+installer сохраняет уже выбранное пользователем значение:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 `
+  -ReasoningEffort high
+```
+
 Чтобы ограничить доступ tools отдельным каталогом:
 
 ```powershell
@@ -192,6 +201,29 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
 
 Успех: `verify.ps1` возвращает JSON с `"ok": true`.
 
+### Опциональный MCP для внешнего inference
+
+Installer также регистрирует выключенный по умолчанию `external-inference` MCP. Он не ускоряет Notion AI,
+не переносит лимиты Notion и не создаёт фиктивный Fast/Ultrafast tier. Инструмент
+делает отдельный, оплачиваемый у выбранного провайдера запрос и возвращает
+фактическое время выполнения. Поддерживаются только явно перечисленные модели
+OpenRouter, Vivgrid и Cerebras; несуществующие GPT-6/Ultrafast aliases запрещены.
+
+Пока MCP выключен, он не может сделать платный запрос. Если пользователь позднее
+явно решит оплачивать отдельный API, ключ вводится локально с маскировкой и не
+записывается в Codex config или логи:
+
+```powershell
+.\configure-external-provider.ps1 -Provider openrouter
+```
+
+Допустимые значения `-Provider`: `openrouter`, `vivgrid`, `cerebras`. После ввода
+перезапустите Codex. Tool `external_provider_status` сообщает только наличие
+ключа, никогда его значение. Tool `external_generate` требует явного признака,
+что пользователь разрешил отдельно оплачиваемый внешний запрос. Скорость нужно
+сравнивать по возвращаемому `elapsed_ms`; название провайдера само по себе не
+гарантирует ускорение.
+
 ## Codex в VS Code
 
 1. Установите официальное расширение `openai.chatgpt`.
@@ -211,6 +243,32 @@ installer автоматически и idempotent-патчит этот фил�
 auto-compaction запускается на 200 000 total tokens, а output tools ограничен
 12 000 токенов. Bridge поддерживает и обычный compaction-turn, и
 `POST /v1/responses/compact`.
+
+## Опциональный Fast mode в Codex Desktop на Windows
+
+Если пользовательская копия Codex Desktop уже подготовлена в
+`%LOCALAPPDATA%\NotionCode\CodexDesktop\<version>\app`, Windows-installer
+запускает строгий compatibility patch для встроенного переключателя
+`Standard` / `Fast`. Защищённые файлы в `C:\Program Files\WindowsApps` никогда
+не изменяются.
+
+Patcher поддерживает только явно проверенные версии, требует ровно по одному
+известному UI- и request-gate, сохраняет исходный `app.asar` рядом как
+`app.asar.notioncode-original.bak`, пересчитывает SHA-256 и block-integrity
+целевого renderer-файла и сохраняет точный размер архива. Неизвестная версия,
+неоднозначный pattern или несовпадение integrity завершают операцию без
+частичного обновления. Повторный запуск идемпотентен.
+
+Для проверки без записи:
+
+```powershell
+node .\scripts\patch-codex-desktop.mjs --dry-run
+```
+
+После обновления официального Codex Desktop сначала подготовьте новую
+пользовательскую копию, затем обновите список проверенных версий patcher-а и
+повторите installer. Скрипт не придумывает Ultrafast-модели и показывает Fast
+только для моделей, которые действительно публикуют tier `priority`.
 
 ## Лимиты контекста и токенов
 
@@ -514,6 +572,7 @@ npm --prefix runtime test
 npm --prefix runtime run check
 npm --prefix notion-private-api-mcp run check
 node --test scripts/install-codex-config.test.mjs
+node --test scripts/patch-codex-desktop.test.mjs
 node --test scripts/patch-codex-webview.test.mjs
 node --test scripts/render-config.test.mjs
 node scripts/check-layout.mjs

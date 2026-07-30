@@ -17,6 +17,20 @@
         {
           "effort": "high",
           "description": "Thorough"
+        },
+        {
+          "effort": "xhigh",
+          "description": "Extra high"
+        }
+      ],
+      "additional_speed_tiers": [
+        "fast"
+      ],
+      "service_tiers": [
+        {
+          "id": "priority",
+          "name": "Fast",
+          "description": "Keeps the selected model and requests the provider priority tier when supported"
         }
       ],
       "shell_type": "shell_command",
@@ -74,6 +88,10 @@
         {
           "reasoningEffort": "high",
           "description": "Thorough"
+        },
+        {
+          "reasoningEffort": "xhigh",
+          "description": "Extra high"
         }
       ]
     },
@@ -94,6 +112,28 @@
         {
           "effort": "high",
           "description": "Thorough"
+        },
+        {
+          "effort": "xhigh",
+          "description": "Extra high"
+        },
+        {
+          "effort": "max",
+          "description": "Maximum"
+        },
+        {
+          "effort": "ultra",
+          "description": "Ultra"
+        }
+      ],
+      "additional_speed_tiers": [
+        "fast"
+      ],
+      "service_tiers": [
+        {
+          "id": "priority",
+          "name": "Fast",
+          "description": "Keeps the selected model and requests the provider priority tier when supported"
         }
       ],
       "shell_type": "shell_command",
@@ -151,6 +191,18 @@
         {
           "reasoningEffort": "high",
           "description": "Thorough"
+        },
+        {
+          "reasoningEffort": "xhigh",
+          "description": "Extra high"
+        },
+        {
+          "reasoningEffort": "max",
+          "description": "Maximum"
+        },
+        {
+          "reasoningEffort": "ultra",
+          "description": "Ultra"
         }
       ]
     },

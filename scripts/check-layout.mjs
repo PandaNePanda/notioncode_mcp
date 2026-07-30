@@ -18,6 +18,8 @@ const requiredShared = [
   "notion-private-api-mcp/run-from-account.js",
   "config/codex-cli-config.toml",
   "scripts/install-codex-config.mjs",
+  "scripts/patch-codex-desktop.mjs",
+  "scripts/patch-codex-desktop.test.mjs",
   "scripts/patch-codex-webview.mjs",
   "scripts/test-codex-app-server.mjs",
   "scripts/check-public-release.mjs",

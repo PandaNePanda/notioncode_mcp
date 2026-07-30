@@ -72,6 +72,8 @@ chmod 600 "${ROOT}/runtime/.env"
 run_as_service_user node "${ROOT}/scripts/install-model-aliases.mjs" \
   "${ROOT}/state-template/.notionagents/models.json" "${ACCOUNT_HOME}/models.json"
 chmod 600 "${ACCOUNT_HOME}/models.json"
+install -m 600 "${ROOT}/config/codex-models.json" "${ACCOUNT_HOME}/codex-models.json"
+chown "${SERVICE_USER}:$(id -gn "${SERVICE_USER}")" "${ACCOUNT_HOME}/codex-models.json"
 
 run_as_service_user env PYTHONPATH="${ROOT}/bridge" \
   "${ROOT}/.runtime/notion-agent-cli-venv/bin/python" \

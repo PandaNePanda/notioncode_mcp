@@ -310,6 +310,8 @@ async def complete_with_images(
     workspace_search: bool = False,
     ask_mode: bool = True,
     thread_id: str | None = None,
+    reasoning_effort: str | None = None,
+    service_tier: str | None = None,
     on_thinking_delta_async: Callable[[str], Awaitable[None]] | None = None,
 ) -> ChatResponse:
     """Complete a request with native images and optional thinking deltas.
@@ -326,6 +328,8 @@ async def complete_with_images(
             workspace_search=workspace_search,
             ask_mode=ask_mode,
             thread_id=thread_id,
+            reasoning_effort=reasoning_effort,
+            service_tier=service_tier,
         )
     prep = notion._prepare_call(
         prompt=prompt,
@@ -336,6 +340,8 @@ async def complete_with_images(
         ask_mode=ask_mode,
         thread_id=thread_id,
         workflow_id=None,
+        reasoning_effort=reasoning_effort,
+        service_tier=service_tier,
     )
     if images:
         attachments = [
